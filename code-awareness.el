@@ -966,8 +966,24 @@ Argument DATA the data received from Code Awareness (peer file info)."
 Argument PEER-FILE the path of the peer file that was extracted (in tmp folder).
 Argument USER-FILE the path of the existing file in the buffer.
 Argument TITLE title of the diff buffer."
+  ;; Close any existing EDiff session first
+  (when (and (boundp 'ediff-control-buffer) ediff-control-buffer
+             (buffer-live-p ediff-control-buffer))
+    (code-awareness-log-info "Closing existing EDiff session")
+    (with-current-buffer ediff-control-buffer
+      (ediff-quit t)))
+
   (let* ((peer-buffer (find-file-noselect peer-file))
          (user-buffer (find-file-noselect user-file)))
+    ;; Configure peer buffer to auto-revert without prompting
+    (with-current-buffer peer-buffer
+      (setq-local revert-buffer-function
+                  (lambda (_ignore-auto _noconfirm)
+                    (let ((inhibit-read-only t))
+                      (erase-buffer)
+                      (insert-file-contents peer-file nil nil nil t))))
+      (setq-local buffer-read-only t))
+
     ;; Use ediff for a better diff experience if available
     (if (fboundp 'ediff-buffers)
         (progn
@@ -1430,6 +1446,7 @@ Argument ERROR-DATA error message received from the request."
              (buffer-live-p code-awareness--active-buffer)
              (buffer-file-name code-awareness--active-buffer))
     (let ((filename (buffer-file-name code-awareness--active-buffer)))
+      ;; TODO: we're currently not handling the response -- line-diffs get refreshed only upon buffer switch
       (code-awareness--transmit "repo:file-saved"
                                `((fpath . ,filename)
                                  (doc . ,(buffer-string))
@@ -1585,11 +1602,9 @@ Enable Code Awareness functionality for collaborative development."
 (defun code-awareness--cleanup-on-exit ()
   "Cleanup Code Awareness when Emacs is about to exit."
   (when code-awareness-mode
-    (code-awareness-log-info "Emacs exiting, cleaning up connections")
-    ;; Send disconnect messages first, then force cleanup
-    (code-awareness--send-disconnect-messages)
-    ;; Force synchronous cleanup to ensure processes are deleted
-    (code-awareness--force-cleanup)))
+    (code-awareness-log-info "Emacs exiting, disabling code-awareness-mode")
+    ;; Disable the mode which will trigger proper cleanup including disconnect messages
+    (code-awareness-mode -1)))
 
 ;; Note: kill-emacs-hook is added in code-awareness--enable, not at load time
 
