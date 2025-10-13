@@ -868,13 +868,21 @@ Argument ACTION string describing the event action, e.g. auth:info.
 Argument DATA additional data received from Code Awareness (JSON)."
   (let* ((key (format "res:%s:%s" domain action))
          (handler (gethash key code-awareness--response-handlers)))
-    ;; Handle auth responses automatically (they may come from external sources)
-    (if (and (string= domain "*") (or (string= action "auth:info") (string= action "auth:login")))
-        (code-awareness--handle-auth-info-response data)
-      ;; Handle other responses with registered handlers
-      (when handler
-        (remhash key code-awareness--response-handlers)
-        (funcall handler data)))))
+    ;; Handle broadcast responses automatically (they may come from external sources)
+    (cond
+     ;; Auth responses from broadcast
+     ((and (string= domain "*") (or (string= action "auth:info") (string= action "auth:login")))
+      (code-awareness--handle-auth-info-response data))
+     ;; Open peer file response from local service broadcast
+     ((and (string= domain "code") (string= action "repo:open-peer-file"))
+      (code-awareness--handle-open-peer-file-response data))
+     ;; Branch diff response from local service broadcast
+     ((and (string= domain "code") (string= action "repo:branch:select"))
+      (code-awareness--handle-branch-diff-response data))
+     ;; Other responses with registered handlers
+     (handler
+      (remhash key code-awareness--response-handlers)
+      (funcall handler data)))))
 
 (defun code-awareness--handle-repo-active-path-response (data &optional expected-file-path)
   "Handle response from repo:active-path request.
@@ -961,6 +969,50 @@ Argument DATA the data received from Code Awareness (peer file info)."
       (code-awareness-log-error "Missing file paths for diff: peer-file=%s, user-file=%s"
                                peer-file user-file))))
 
+(defun code-awareness--handle-open-peer-file-response (data)
+  "Handle response from repo:open-peer-file request.
+The local service has downloaded/extracted the file and provides the full path.
+Argument DATA the data received from Code Awareness local service."
+  (code-awareness-log-info "Received open-peer-file response")
+  (let* ((file-path (alist-get 'filePath data))
+         (file-paths (alist-get 'filePaths data))
+         (exists (alist-get 'exists data)))
+    (cond
+     ;; Case 1: Single file path provided
+     (file-path
+      (code-awareness-log-info "Opening peer file: %s (exists locally: %s)" file-path exists)
+      (if (file-exists-p file-path)
+          (progn
+            ;; Open the file in a new buffer
+            (let ((buffer (find-file-noselect file-path)))
+              (unless exists
+                ;; If it's a downloaded peer file (not local), make it read-only
+                (with-current-buffer buffer
+                  (setq-local buffer-read-only t)
+                  (setq-local header-line-format "Peer file (read-only)")))
+              ;; Display the buffer
+              (switch-to-buffer buffer)
+              (message "Opened peer file: %s" (file-name-nondirectory file-path))))
+        (code-awareness-log-error "File does not exist: %s" file-path)
+        (message "Error: File does not exist: %s" file-path)))
+
+     ;; Case 2: Two file paths provided (diff mode)
+     ((and file-paths (vectorp file-paths) (>= (length file-paths) 2))
+      (let ((file1 (aref file-paths 0))
+            (file2 (aref file-paths 1)))
+        (code-awareness-log-info "Opening diff between: %s and %s" file1 file2)
+        (if (and (file-exists-p file1) (file-exists-p file2))
+            (progn
+              ;; Open diff view using ediff or fallback to diff-mode
+              (code-awareness--open-diff-view file1 file2 "Peer File Comparison"))
+          (code-awareness-log-error "One or both files do not exist: %s, %s" file1 file2)
+          (message "Error: One or both files do not exist"))))
+
+     ;; Case 3: No valid data
+     (t
+      (code-awareness-log-error "Invalid repo:open-peer-file response: %s" data)
+      (message "Error: Invalid file path data in repo:open-peer-file response")))))
+
 (defun code-awareness--open-diff-view (peer-file user-file title)
   "Open a diff view comparing peer file with user file.
 Argument PEER-FILE the path of the peer file that was extracted (in tmp folder).
@@ -1027,13 +1079,16 @@ Argument FILE2 the second file in the diff command."
 
 ;;; Additional Event Handlers
 
-(defun code-awareness--handle-branch-select (branch)
-  "Handle BRANCH selection event."
-  (code-awareness-log-info "Branch selected: %s" branch)
-  (let ((message-data `((branch . ,branch)
-                        (caw . ,code-awareness--guid))))
-    (code-awareness--transmit "repo:diff-branch" message-data)
-    (code-awareness--setup-response-handler "code" "repo:diff-branch")))
+(defun code-awareness--handle-branch-select (data)
+  "Handle BRANCH selection event.
+Argument DATA the data received from the branch:select event."
+  (let ((branch-name (alist-get 'branch data)))
+    (code-awareness-log-info "Branch selected: %s" branch-name)
+    (when branch-name
+      (let ((message-data `((branch . ,branch-name)
+                            (caw . ,code-awareness--guid))))
+        (code-awareness--transmit "repo:branch:select" message-data)
+        (code-awareness--setup-response-handler "code" "repo:branch:select")))))
 
 (defun code-awareness--handle-branch-unselect ()
   "Handle branch unselection event."
@@ -1097,10 +1152,11 @@ Argument DATA the data received from Code Awareness application."
     (when source-file
       (find-file source-file))))
 
+
 ;;; Response Handlers
 
 (defun code-awareness--handle-branch-diff-response (data)
-  "Handle response from repo:diff-branch request.
+  "Handle response from repo:branch:select request.
 Argument DATA the data received from Code Awareness application."
   (code-awareness-log-info "Received branch diff response")
   (let* ((peer-file (alist-get 'peerFile data))
@@ -1163,7 +1219,7 @@ FILE-PATH is the file path associated with this request (for validation)."
       (puthash res-key (lambda (data) (code-awareness--handle-repo-active-path-response data file-path)) code-awareness--response-handlers))
      ((string= (format "%s:%s" domain action) "code:repo:diff-peer")
       (puthash res-key #'code-awareness--handle-peer-diff-response code-awareness--response-handlers))
-     ((string= (format "%s:%s" domain action) "code:repo:diff-branch")
+     ((string= (format "%s:%s" domain action) "code:repo:branch:select")
       (puthash res-key #'code-awareness--handle-branch-diff-response code-awareness--response-handlers))
      ((string= (format "%s:%s" domain action) "code:context:apply")
       (puthash res-key #'code-awareness--handle-context-apply-response code-awareness--response-handlers))
