@@ -192,7 +192,7 @@ make test       # Run the test suite
 1. **Check if Code Awareness application is running**:
    ```bash
    # Check if the catalog socket exists
-   ls -la /tmp/caw.catalog
+   ls -la ~/.kawa-code/sockets/caw.catalog
    ```
 
 2. **Enable debug mode**:

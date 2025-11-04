@@ -489,11 +489,11 @@ Argument HANDLER-FUNCTION a ref to the function that should handle the event."
 ;; The refreshActiveFile hook implementation follows the VSCode pattern:
 ;; 1. Called immediately after authentication is successful
 ;; 2. Called whenever the active buffer changes
-;; 3. Sends a repo:active-path message to CodeAwareness app with the current file path and content
+;; 3. Sends a code:active-path message to CodeAwareness app with the current file path and content
 ;; 4. Updates highlights and project data based on the response
 
 (defun code-awareness--refresh-active-file ()
-  "Refresh the currently active file by sending repo:active-path message."
+  "Refresh the currently active file by sending code:active-path message."
 
   ;; Check if we have the necessary components to send a refresh request
   (let ((fpath (code-awareness--get-active-file-path))
@@ -509,8 +509,8 @@ Argument HANDLER-FUNCTION a ref to the function that should handle the event."
           (let ((message-data `((fpath . ,(code-awareness--cross-platform-path fpath))
                                 (doc . ,doc)
                                 (caw . ,code-awareness--guid))))
-            (code-awareness--transmit "repo:active-path" message-data)
-            (code-awareness--setup-response-handler "code" "repo:active-path" fpath)))))))
+            (code-awareness--transmit "active-path" message-data)
+            (code-awareness--setup-response-handler "code" "active-path" fpath)))))))
 
 ;;; Highlighting System
 
@@ -785,7 +785,7 @@ Argument HIGHLIGHT-DATA the array of lines to highlight."
   "Get the socket path for the given GUID."
   (if (eq system-type 'windows-nt)
       (format "\\\\.\\pipe\\caw.%s" guid)
-    (format "%s/caw.%s" (directory-file-name (temporary-file-directory)) guid)))
+    (format "%s/sockets/caw.%s" (expand-file-name "~/.kawa-code") guid)))
 
 (defun code-awareness--get-catalog-socket-path ()
   "Get the catalog socket path."
@@ -876,10 +876,10 @@ Argument DATA additional data received from Code Awareness (JSON)."
      ((and (string= domain "*") (or (string= action "auth:info") (string= action "auth:login")))
       (code-awareness--handle-auth-info-response data))
      ;; Open peer file response from local service broadcast
-     ((and (string= domain "code") (string= action "repo:open-peer-file"))
+     ((and (string= domain "code") (string= action "open-peer-file"))
       (code-awareness--handle-open-peer-file-response data))
      ;; Branch diff response from local service broadcast
-     ((and (string= domain "code") (string= action "repo:branch:select"))
+     ((and (string= domain "code") (string= action "branch:select"))
       (code-awareness--handle-branch-diff-response data))
      ;; Other responses with registered handlers
      (handler
@@ -887,11 +887,11 @@ Argument DATA additional data received from Code Awareness (JSON)."
       (funcall handler data)))))
 
 (defun code-awareness--handle-repo-active-path-response (data &optional expected-file-path)
-  "Handle response from repo:active-path request.
+  "Handle response from code:active-path request.
 EXPECTED-FILE-PATH is the
 file path that was originally requested (for validation).
 Argument DATA the data received from Code Awareness application."
-  (code-awareness-log-info "Received repo:active-path response")
+  (code-awareness-log-info "Received code:active-path response")
   ;; Add the project to our store
   (code-awareness--add-project data)
   ;; Extract and apply highlights from the hl data structure
@@ -949,8 +949,8 @@ Argument PEER-DATA the data received from Code Awareness (peer info)."
                             (caw . ,code-awareness--guid)
                             (peer . ,peer-data))))
         (code-awareness-log-info "Requesting peer diff for %s" fpath)
-        (code-awareness--transmit "repo:diff-peer" message-data)
-        (code-awareness--setup-response-handler "code" "repo:diff-peer")))))
+        (code-awareness--transmit "diff-peer" message-data)
+        (code-awareness--setup-response-handler "code" "diff-peer")))))
 
 (defun code-awareness--handle-peer-unselect ()
   "Handle peer unselection event from Muninn app."
@@ -960,7 +960,7 @@ Argument PEER-DATA the data received from Code Awareness (peer info)."
   (code-awareness--close-diff-buffers))
 
 (defun code-awareness--handle-peer-diff-response (data)
-  "Handle response from repo:diff-peer request.
+  "Handle response from code:diff-peer request.
 Argument DATA the data received from Code Awareness (peer file info)."
   (code-awareness-log-info "Received peer diff response")
   (let* ((peer-file (alist-get 'peerFile data))
@@ -972,13 +972,13 @@ Argument DATA the data received from Code Awareness (peer file info)."
                       (expand-file-name fpath root))))
     (if (and peer-file user-file)
         (progn
-          (code-awareness-log-info "Opening diff: %s vs %s" peer-file user-file)
-          (code-awareness--open-diff-view peer-file user-file title))
+          (code-awareness-log-info "Opening diff: %s vs %s" user-file peer-file)
+          (code-awareness--open-diff-view user-file peer-file title))
       (code-awareness-log-error "Missing file paths for diff: peer-file=%s, user-file=%s"
                                peer-file user-file))))
 
 (defun code-awareness--handle-open-peer-file-response (data)
-  "Handle response from repo:open-peer-file request.
+  "Handle response from code:open-peer-file request.
 The local service has downloaded/extracted the file and provides the full path.
 Argument DATA the data received from Code Awareness local service."
   (code-awareness-log-info "Received open-peer-file response")
@@ -1018,8 +1018,8 @@ Argument DATA the data received from Code Awareness local service."
 
      ;; Case 3: No valid data
      (t
-      (code-awareness-log-error "Invalid repo:open-peer-file response: %s" data)
-      (message "Error: Invalid file path data in repo:open-peer-file response")))))
+      (code-awareness-log-error "Invalid code:open-peer-file response: %s" data)
+      (message "Error: Invalid file path data in code:open-peer-file response")))))
 
 (defun code-awareness--open-diff-view (peer-file user-file title)
   "Open a diff view comparing peer file with user file.
@@ -1087,16 +1087,45 @@ Argument FILE2 the second file in the diff command."
 
 ;;; Additional Event Handlers
 
-(defun code-awareness--handle-branch-select (data)
+(defun code-awareness--handle-branch-select (branch-or-data)
   "Handle BRANCH selection event.
-Argument DATA the data received from the branch:select event."
-  (let ((branch-name (alist-get 'branch data)))
-    (code-awareness-log-info "Branch selected: %s" branch-name)
-    (when branch-name
-      (let ((message-data `((branch . ,branch-name)
-                            (caw . ,code-awareness--guid))))
-        (code-awareness--transmit "repo:branch:select" message-data)
-        (code-awareness--setup-response-handler "code" "repo:branch:select")))))
+Two cases:
+1. String branch name from webview - transmit to Gardener for processing
+2. Response data from Gardener/Muninn with peerFile/userFile - open diff directly
+Argument BRANCH-OR-DATA either a string branch name or an alist with diff data."
+  (cond
+   ;; Case 1: Branch name string - need to request diff from Gardener
+   ((stringp branch-or-data)
+    (code-awareness-log-info "Branch selected: %s (requesting diff)" branch-or-data)
+    (let ((message-data `((branch . ,branch-or-data)
+                          (caw . ,code-awareness--guid))))
+      (code-awareness--transmit "branch:select" message-data)
+      (code-awareness--setup-response-handler "code" "branch:select")))
+
+   ;; Case 2: Branch name in data alist - extract and process
+   ((and (listp branch-or-data) (alist-get 'branch branch-or-data))
+    (let ((branch-name (alist-get 'branch branch-or-data)))
+      (code-awareness-log-info "Branch selected: %s (requesting diff)" branch-name)
+      (when branch-name
+        (let ((message-data `((branch . ,branch-name)
+                              (caw . ,code-awareness--guid))))
+          (code-awareness--transmit "branch:select" message-data)
+          (code-awareness--setup-response-handler "code" "branch:select")))))
+
+   ;; Case 3: Already-processed diff data from Muninn with peerFile and userFile
+   ((and (listp branch-or-data)
+         (alist-get 'peerFile branch-or-data)
+         (alist-get 'userFile branch-or-data))
+    (let ((peer-file (alist-get 'peerFile branch-or-data))
+          (user-file (alist-get 'userFile branch-or-data))
+          (title (alist-get 'title branch-or-data)))
+      (code-awareness-log-info "Opening pre-processed branch diff: %s vs %s" user-file peer-file)
+      (code-awareness--open-diff-view user-file peer-file title)))
+
+   ;; Case 4: Invalid data
+   (t
+    (code-awareness-log-error "branch:select: Invalid data format %s" branch-or-data)
+    (message "Invalid branch selection data"))))
 
 (defun code-awareness--handle-branch-unselect ()
   "Handle branch unselection event."
@@ -1164,7 +1193,7 @@ Argument DATA the data received from Code Awareness application."
 ;;; Response Handlers
 
 (defun code-awareness--handle-branch-diff-response (data)
-  "Handle response from repo:branch:select request.
+  "Handle response from code:branch:select request.
 Argument DATA the data received from Code Awareness application."
   (code-awareness-log-info "Received branch diff response")
   (let* ((peer-file (alist-get 'peerFile data))
@@ -1172,8 +1201,8 @@ Argument DATA the data received from Code Awareness application."
          (title (alist-get 'title data)))
     (if (and peer-file user-file)
         (progn
-          (code-awareness-log-info "Opening branch diff: %s vs %s" peer-file user-file)
-          (code-awareness--open-diff-view peer-file user-file title))
+          (code-awareness-log-info "Opening branch diff: %s vs %s" user-file peer-file)
+          (code-awareness--open-diff-view user-file peer-file title))
       (code-awareness-log-error "Missing file paths for branch diff: peer-file=%s, user-file=%s"
                                peer-file user-file))))
 
@@ -1197,7 +1226,7 @@ Argument ERROR-DATA incoming error message."
 (defun code-awareness--transmit (action data)
   "Transmit a message to the Code Awareness IPC.
 Argument ACTION the action to send to Code Awareness app,
-e.g. repo:active-path, auth:info, etc.
+e.g. code:active-path, auth:info, etc.
 Argument DATA data to send to Code Awareness application."
   (let* ((domain (if (member action '("auth:info" "auth:login")) "*" "code"))
          (flow "req")
@@ -1223,13 +1252,25 @@ FILE-PATH is the file path associated with this request (for validation)."
         (err-key (format "err:%s:%s" domain action)))
     ;; Set up specific handlers for known actions
     (cond
-     ((string= (format "%s:%s" domain action) "code:repo:active-path")
+     ((string= (format "%s:%s" domain action) "code:active-path")
       (puthash res-key (lambda (data) (code-awareness--handle-repo-active-path-response data file-path)) code-awareness--response-handlers))
-     ((string= (format "%s:%s" domain action) "code:repo:diff-peer")
+     ((string= (format "%s:%s" domain action) "code:diff-peer")
       (puthash res-key #'code-awareness--handle-peer-diff-response code-awareness--response-handlers))
-     ((string= (format "%s:%s" domain action) "code:repo:branch:select")
-      (puthash res-key #'code-awareness--handle-branch-diff-response code-awareness--response-handlers))
-     ((string= (format "%s:%s" domain action) "code:repo:get-tmp-dir")
+     ((string= (format "%s:%s" domain action) "code:branch:select")
+      (puthash res-key #'code-awareness--handle-branch-diff-response code-awareness--response-handlers)
+      ;; Add specific error handler for branch:select
+      (puthash err-key (lambda (err)
+                         (code-awareness-log-error "Branch diff error: %s" err)
+                         (message "Branch diff failed: %s" (or (alist-get 'message err) err)))
+               code-awareness--response-handlers))
+     ((string= (format "%s:%s" domain action) "code:open-peer-file")
+      (puthash res-key #'code-awareness--handle-open-peer-file-response code-awareness--response-handlers)
+      ;; Add specific error handler for open-peer-file
+      (puthash err-key (lambda (err)
+                         (code-awareness-log-error "Open peer file error: %s" err)
+                         (message "Failed to open peer file: %s" (or (alist-get 'message err) err)))
+               code-awareness--response-handlers))
+     ((string= (format "%s:%s" domain action) "code:get-tmp-dir")
       (puthash res-key #'code-awareness--handle-get-tmp-dir-response code-awareness--response-handlers))
      ((string= (format "%s:%s" domain action) "code:context:apply")
       (puthash res-key #'code-awareness--handle-context-apply-response code-awareness--response-handlers))
@@ -1238,7 +1279,10 @@ FILE-PATH is the file path associated with this request (for validation)."
       (puthash res-key #'code-awareness--handle-auth-info-response code-awareness--response-handlers))
      (t
       (puthash res-key #'code-awareness--handle-success code-awareness--response-handlers)))
-    (puthash err-key #'code-awareness--handle-failure code-awareness--response-handlers)))
+    ;; Set up generic error handler for actions without specific error handlers
+    (unless (or (string= (format "%s:%s" domain action) "code:branch:select")
+                (string= (format "%s:%s" domain action) "code:open-peer-file"))
+      (puthash err-key #'code-awareness--handle-failure code-awareness--response-handlers))))
 
 (defun code-awareness--handle-success (data)
   "Handle successful IPC response.
@@ -1343,12 +1387,12 @@ Argument ERROR-DATA error message received from the request."
   (if (and code-awareness--ipc-process
            (eq (process-status code-awareness--ipc-process) 'open))
       (progn
-        (code-awareness--transmit "repo:get-tmp-dir" code-awareness--guid)
-        (code-awareness--setup-response-handler "code" "repo:get-tmp-dir"))
+        (code-awareness--transmit "get-tmp-dir" code-awareness--guid)
+        (code-awareness--setup-response-handler "code" "get-tmp-dir"))
     (code-awareness-log-error "IPC process not ready for get-tmp-dir request")))
 
 (defun code-awareness--handle-get-tmp-dir-response (data)
-  "Handle response from repo:get-tmp-dir request.
+  "Handle response from code:get-tmp-dir request.
 Argument DATA the data received from Code Awareness application."
   (let ((tmp-dir (alist-get 'tmpDir data)))
     (when tmp-dir
@@ -1542,7 +1586,7 @@ Argument DATA the data received from Code Awareness application."
              (buffer-file-name code-awareness--active-buffer))
     (let ((filename (buffer-file-name code-awareness--active-buffer)))
       ;; TODO: we're currently not handling the response -- line-diffs get refreshed only upon buffer switch
-      (code-awareness--transmit "repo:file-saved"
+      (code-awareness--transmit "file-saved"
                                `((fpath . ,filename)
                                  (doc . ,(buffer-string))
                                  (caw . ,code-awareness--guid))))))

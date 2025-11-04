@@ -3,5 +3,13 @@
 
 * Changelog
 
+** v1.0.15
+- Enhanced branch:select handler to support dual-case handling:
+  - Direct branch name selection from webview
+  - Pre-processed diff data from Muninn (prevents double-processing)
+- Fixed diff argument order: user file now appears on left side, peer file on right side
+- Added specific error handlers for branch operations (branch:select and open-peer-file)
+- Improved compatibility with Kawa Code ecosystem and Muninn integration
+
 ** v1.0.0
 - initial beta testing

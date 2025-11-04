@@ -1,4 +1,4 @@
-(define-package "code-awareness" "1.0.0"
+(define-package "code-awareness" "1.0.15"
   "Code Awareness - Collaborative development tool"
   '((emacs "27.1"))
   ;; '((emacs "27.1")
