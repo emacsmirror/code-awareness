@@ -1,6 +1,6 @@
-;;; spacemacs-config.el --- Spacemacs configuration for Code Awareness
+;;; spacemacs-config.el --- Spacemacs configuration for Kawa Code
 
-;; Code Awareness DEV configuration for Spacemacs
+;; Kawa Code DEV configuration for Spacemacs
 ;; Add this to your ~/.spacemacs file in the dotspacemacs/user-config section
 
 ;; Method 1: Load from a specific path (for development)
@@ -10,14 +10,14 @@
     (add-to-list 'load-path code-awareness-path)
     (require 'code-awareness)))
 
-;; Method 2: If you want to enable Code Awareness by default
+;; Method 2: If you want to enable Kawa Code by default
 ;; Uncomment the following line:
 ;; (code-awareness-mode 1)
 
 ;; Method 3: If you want to enable it only for specific modes
 ;; (add-hook 'prog-mode-hook #'code-awareness-mode)
 
-;; Optional: Configure Code Awareness settings
+;; Optional: Configure Kawa Code settings
 ;; (setq code-awareness-debug t)  ; Enable debug mode
 ;; (setq code-awareness-update-delay 0.3)  ; Faster updates
 

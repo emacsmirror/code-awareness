@@ -2,7 +2,7 @@
 #+STARTUP: noinlineimages
 [[https://discord.com/channels/1412284975247790112/1412284976032120888][https://img.shields.io/discord/1412284975247790112.svg?logo=discord]]
 
-* Code Awareness - a low noise collaboration toolset for Emacs     :noexport:
+* Kawa Code - a low noise collaboration toolset for Emacs     :noexport:
 
 [[file:screenshots/demo-side-by-side.jpg]]
 
@@ -17,48 +17,48 @@
 * State of Development
 
 Code Awarenes is currently in an active state of development. Feel free to submit feedback, PRs, etc.
-Other components of the Code Awareness ecosystem are also in active state of development, so please
+Other components of the Kawa Code ecosystem are also in active state of development, so please
 follow us on github or our website.
 
 Please see the README-Development.md for more details.
 
 * Quick Feature Overview
-Code Awareness highlights the code intersections between your working copy and other team member's.
+Kawa Code highlights the code intersections between your working copy and other team member's.
 This provides an early warning system for merge conflicts, as well as instant traveling between
 working copies of multiple developers without needing to commit and push.
 
 ## License
 
 This package is licensed under the GPLv3. 
-It requires the Code Awareness binary (proprietary, licensed separately) to function fully.
+It requires the Kawa Code binary (proprietary, licensed separately) to function fully.
 
 # Installation
 
-First please download and install Kawa Code from [[https://codeawareness.com][Code Awareness website]].
+First please download and install Kawa Code from [[https://codeawareness.com][Kawa Code website]].
 
 Clone this repository, and then in your emacs config, add the following lines, and replace the /home/username/ca.emacs/ with the path of your choice.
 
 ```
-  ;; Code Awareness Configuration
+  ;; Kawa Code Configuration
   (let ((code-awareness-path "/home/username/ca.emacs/"))
     (when (file-exists-p code-awareness-path)
       (add-to-list 'load-path code-awareness-path)
       (require 'code-awareness)
-      (message "Code Awareness loaded successfully")))
+      (message "Kawa Code loaded successfully")))
 ```
 
 ## Spacemacs Configuration
 
-If you're using Spacemacs, you can add the Code Awareness configuration to your `~/.spacemacs` file in the `dotspacemacs/user-config` section:
+If you're using Spacemacs, you can add the Kawa Code configuration to your `~/.spacemacs` file in the `dotspacemacs/user-config` section:
 
 ```elisp
 (defun dotspacemacs/user-config ()
-  ;; Code Awareness Configuration
+  ;; Kawa Code Configuration
   (let ((code-awareness-path "/home/username/ca.emacs/"))
     (when (file-exists-p code-awareness-path)
       (add-to-list 'load-path code-awareness-path)
       (require 'code-awareness)
-      (message "Code Awareness loaded successfully"))))
+      (message "Kawa Code loaded successfully"))))
 
 ### Loading Compiled Version (.elc files)
 
@@ -77,7 +77,7 @@ To load the compiled version instead of the source files for better performance:
    If you want to ensure only compiled files are loaded and prevent any fallback to source files, you can modify your config to explicitly load the `.elc` files:
    ```elisp
    (defun dotspacemacs/user-config ()
-     ;; Code Awareness Configuration (compiled version)
+     ;; Kawa Code Configuration (compiled version)
      (let ((code-awareness-path "/home/username/ca.emacs/"))
        (when (file-exists-p code-awareness-path)
          (add-to-list 'load-path code-awareness-path)
@@ -87,7 +87,7 @@ To load the compiled version instead of the source files for better performance:
                (load compiled-file)
              ;; Fallback to source if no compiled version
              (require 'code-awareness)))
-         (message "Code Awareness loaded successfully"))))
+         (message "Kawa Code loaded successfully"))))
    ```
 
 **Note:** The compiled version loads faster and includes all the compilation fixes we've implemented. Always run `make compile` after making changes to ensure your `.elc` files are up to date.
@@ -98,13 +98,13 @@ To load the compiled version instead of the source files for better performance:
 - **Optional**: Use step 3 only if you want to force compiled-only loading
 
 * Quick Start
- * First download and run the [[https://code-awareness.com]][Code Awareness] application.
- * Login to Code Awareness through the application.
- * In emacs, run the `code-awareness-mode` command to enter Code Awareness minor mode.
- * The Code Awareness application is used side by side with emacs, VSCode, etc, i.e. on a wide-screen monitor, or on a second monitor.
+ * First download and run the [[https://code-awareness.com]][Kawa Code] application.
+ * Login to Kawa Code through the application.
+ * In emacs, run the `code-awareness-mode` command to enter Kawa Code minor mode.
+ * The Kawa Code application is used side by side with emacs, VSCode, etc, i.e. on a wide-screen monitor, or on a second monitor.
 
 * Contributing
-Contributions are very much welcome, but should fit the general scope and style of Code Awareness.
+Contributions are very much welcome, but should fit the general scope and style of Kawa Code.
 The following is a list of guidelines that should be met (exceptions confirm the rule):
 
  - There should be one commit per feature.
@@ -114,7 +114,7 @@ The following is a list of guidelines that should be met (exceptions confirm the
  - There must not be any compiler warnings.
  - The test suite must pass.
 
-Code Awareness uses cask to setup a local testing environment and a Makefile that simplifies compiling and testing the codebase. First run ~cask install~ to locally pull code-awareness' dependencies. Then you can use the following Makefile targets:
+Kawa Code uses cask to setup a local testing environment and a Makefile that simplifies compiling and testing the codebase. First run ~cask install~ to locally pull code-awareness' dependencies. Then you can use the following Makefile targets:
 
  - make prepare :: Downloads and updates Cask's dependencies. Is a dependency of the ~test~ and ~compile~ targets.
  - make compile :: Compiles the code base (and treats compiler warnings as errors).

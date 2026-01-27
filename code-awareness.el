@@ -1,4 +1,4 @@
-;;; code-awareness.el --- Code Awareness collaboration package -*- lexical-binding: t -*-
+;;; code-awareness.el --- Kawa Code collaboration package -*- lexical-binding: t -*-
 
 ;; Author: Mark Vasile <mark@code-awareness.com>
 ;; Package-Requires: ((emacs "27.1"))
@@ -20,15 +20,19 @@
 ;; You should have received a copy of the GNU General Public License
 ;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-;; This package is licensed under GPLv3. It depends on the Code Awareness
+;; This package is licensed under GPLv3. It depends on the Kawa Code
 ;; binary, available at https://code-awareness.com
 
 ;;; Commentary:
 
-;; Code Awareness highlights the code intersections between your working
-;; copy and other team members.  This provides an early warning system
-;; for merge conflicts, as well as instant traveling between working
-;; copies of multiple developers without needing to commit and push.
+;; This is an Emacs extension for Kawa Code, a collaboration tool
+;; that highlights code intersections between your working copy and other
+;; team members.  This provides an early warning system for merge conflicts,
+;; as well as instant traveling between working copies of multiple developers
+;; without needing to commit and push.
+;;
+;; This package requires the Kawa Code application to be installed and
+;; running.  See https://code-awareness.com for more information.
 
 ;;; Code:
 
@@ -46,7 +50,7 @@
 ;;; Configuration
 
 (defconst code-awareness--caw-schema "caw"
-  "Schema for Code Awareness URIs.")
+  "Schema for Kawa Code URIs.")
 
 (defconst code-awareness--extract-repo-dir "extract"
   "Directory name for extracted repository files.")
@@ -56,13 +60,13 @@
 
 ;;;###autoload
 (defgroup code-awareness-config nil
-  "Code Awareness configuration."
+  "Kawa Code configuration."
   :group 'code-awareness
   :prefix "code-awareness-")
 
 ;;;###autoload
 (defcustom code-awareness-catalog "catalog"
-  "Catalog name for Code Awareness."
+  "Catalog name for Kawa Code."
   :type 'string
   :group 'code-awareness-config)
 
@@ -92,13 +96,13 @@
 
 ;;;###autoload
 (defcustom code-awareness-update-delay 0.5
-  "Delay in seconds before running a Code Awareness update."
+  "Delay in seconds before running a Kawa Code update."
   :type 'number
   :group 'code-awareness-config)
 
 ;;;###autoload
 (defcustom code-awareness-debug nil
-  "Enable debug mode for Code Awareness."
+  "Enable debug mode for Kawa Code."
   :type 'boolean
   :group 'code-awareness-config)
 
@@ -172,7 +176,7 @@ Argument DARK-COLOR color for dark theme."
 ;;; Customization
 
 (defgroup code-awareness nil
-  "Code Awareness, low noise collaboration."
+  "Kawa Code, low noise collaboration."
   :group 'applications
   :prefix "code-awareness-")
 
@@ -185,7 +189,7 @@ Argument DARK-COLOR color for dark theme."
   "Whether the client has been registered with the catalog service.")
 
 (defvar code-awareness--ipc-process nil
-  "IPC process for communicating with the Code Awareness IPC.")
+  "IPC process for communicating with the Kawa Code IPC.")
 
 (defvar code-awareness--ipc-catalog-process nil
   "IPC process for catalog communication.")
@@ -200,21 +204,21 @@ Argument DARK-COLOR color for dark theme."
   "Currently active buffer.")
 
 (defvar code-awareness--poll-attempts 0
-  "Number of polling attempts for Code Awareness IPC socket.")
+  "Number of polling attempts for Kawa Code IPC socket.")
 
 (defvar code-awareness--update-timer nil
   "Timer for debounced updates.")
 
 (defvar code-awareness--connected nil
-  "Whether we're connected to the Code Awareness IPC.")
+  "Whether we're connected to the Kawa Code IPC.")
 
 (defvar code-awareness--config nil
   "Configuration data.")
 
 ;;; Logging Variables
 
-(defvar code-awareness--log-buffer "*Code Awareness Log*"
-  "Buffer name for Code Awareness logs.")
+(defvar code-awareness--log-buffer "*Kawa Code Log*"
+  "Buffer name for Kawa Code logs.")
 
 (defvar code-awareness--log-level 'info
   "Current log level.")
@@ -262,7 +266,7 @@ Optional argument ARGS optional formatting ."
                                 message))
            (log-entry (format "[%s] [ERROR] %s" timestamp formatted-message)))
       (code-awareness--write-to-log-buffer log-entry)
-      (message "Code Awareness Error: %s" formatted-message))))
+      (message "Kawa Code Error: %s" formatted-message))))
 
 ;;;###autoload
 (defun code-awareness-log-warn (message &rest args)
@@ -314,7 +318,7 @@ Optional argument ARGS formatting."
 
 ;;;###autoload
 (defun code-awareness-show-log-buffer ()
-  "Show the Code Awareness log buffer."
+  "Show the Kawa Code log buffer."
   (interactive)
   (let ((buffer (get-buffer-create code-awareness--log-buffer)))
     (switch-to-buffer buffer)
@@ -322,7 +326,7 @@ Optional argument ARGS formatting."
 
 ;;;###autoload
 (defun code-awareness-clear-log-buffer ()
-  "Clear the Code Awareness log buffer."
+  "Clear the Kawa Code log buffer."
   (interactive)
   (let ((buffer (get-buffer code-awareness--log-buffer)))
     (when buffer
@@ -332,7 +336,7 @@ Optional argument ARGS formatting."
 ;;; Store/State Management
 
 (defvar code-awareness--store nil
-  "Central store for Code Awareness state.")
+  "Central store for Kawa Code state.")
 
 (defvar code-awareness--projects nil
   "List of all projects.")
@@ -347,7 +351,7 @@ Optional argument ARGS formatting."
   "Current color theme (1=Light, 2=Dark, 3=High Contrast).")
 
 (defvar code-awareness--tmp-dir (expand-file-name "caw.emacs" (temporary-file-directory))
-  "Temporary directory for Code Awareness.")
+  "Temporary directory for Kawa Code.")
 
 (defvar code-awareness--peer-fs (make-hash-table :test 'equal)
   "Peer file system tree structure.")
@@ -508,7 +512,7 @@ Argument HANDLER-FUNCTION a ref to the function that should handle the event."
           (code-awareness-log-warn "Not authenticated, skipping file refresh")
         (if (not (and code-awareness--ipc-process
                       (eq (process-status code-awareness--ipc-process) 'open)))
-            (code-awareness-log-warn "Code Awareness IPC process not ready, skipping file refresh")
+            (code-awareness-log-warn "Kawa Code IPC process not ready, skipping file refresh")
           (code-awareness-log-info "Refreshing active file %s" fpath)
           (let ((message-data `((fpath . ,(code-awareness--cross-platform-path fpath))
                                 (doc . ,doc)
@@ -631,7 +635,7 @@ Optional argument PROPERTIES optional overlay properties (hl-lines)."
             overlay))))))
 
 (defun code-awareness--clear-buffer-highlights (buffer)
-  "Clear all Code Awareness highlight from the given BUFFER."
+  "Clear all Kawa Code highlight from the given BUFFER."
   (when (and buffer (buffer-live-p buffer))
     (with-current-buffer buffer
       (dolist (overlay (overlays-in (point-min) (point-max)))
@@ -644,7 +648,7 @@ Optional argument PROPERTIES optional overlay properties (hl-lines)."
     (code-awareness-log-info "Cleared highlights for buffer %s" buffer)))
 
 (defun code-awareness--clear-all-highlights ()
-  "Clear all Code Awareness highlight from all buffers."
+  "Clear all Kawa Code highlight from all buffers."
   (dolist (buffer (buffer-list))
     (code-awareness--clear-buffer-highlights buffer))
   (clrhash code-awareness--highlights)
@@ -754,7 +758,7 @@ Optional argument PROPERTIES optional properties for hl-lines overlay."
       overlay)))
 
 (defun code-awareness--clear-buffer-hl-line-highlights (buffer)
-  "Clear all Code Awareness hl-line highlight from the given BUFFER."
+  "Clear all Kawa Code hl-line highlight from the given BUFFER."
   (when (and buffer (buffer-live-p buffer))
     (with-current-buffer buffer
       (dolist (overlay (overlays-in (point-min) (point-max)))
@@ -797,23 +801,23 @@ Argument HIGHLIGHT-DATA the array of lines to highlight."
 
 (defun code-awareness--ipc-sentinel (_process event)
   "Handle IPC process sentinel EVENTs."
-  (code-awareness-log-info "Code Awareness IPC: %s" event)
+  (code-awareness-log-info "Kawa Code IPC: %s" event)
   (cond
    ((string-match "failed" event)
-    (code-awareness-log-error "Code Awareness IPC connection failed")
+    (code-awareness-log-error "Kawa Code IPC connection failed")
     (setq code-awareness--connected nil)
     ;; Retry connection
     (run-with-timer 2.0 nil #'code-awareness--connect-to-local-service))
    ((string-match "exited" event)
-    (code-awareness-log-warn "Code Awareness IPC connection closed")
+    (code-awareness-log-warn "Kawa Code IPC connection closed")
     (setq code-awareness--connected nil))
    ((string-match "connection broken by remote peer" event)
-    (code-awareness-log-warn "Code Awareness IPC rejected connection")
+    (code-awareness-log-warn "Kawa Code IPC rejected connection")
     (setq code-awareness--connected nil)
     ;; Retry connection after a delay
     (run-with-timer 2.0 nil #'code-awareness--connect-to-local-service))
    ((string-match "open" event)
-    (code-awareness-log-info "Successfully connected to Code Awareness IPC")
+    (code-awareness-log-info "Successfully connected to Kawa Code IPC")
     (setq code-awareness--connected t)
     ;; Initialize workspace after connection (like VS Code)
     (code-awareness--init-workspace))
@@ -844,17 +848,21 @@ Argument HIGHLIGHT-DATA the array of lines to highlight."
   "Handle a single IPC MESSAGE."
   (condition-case err
       (let* ((data (json-read-from-string message))
-             (flow (alist-get 'flow data))
              (domain (alist-get 'domain data))
              (action (alist-get 'action data))
              (response-data (alist-get 'data data))
-             (error-data (alist-get 'err data)))
+             (error-data (alist-get 'err data))
+             (msg-id (alist-get '_msgId data)))
         (code-awareness-log-info "%s:%s" domain action)
-        (if (and (string= flow "res") action)
-            (code-awareness--handle-response domain action response-data)
-          (if (and (string= flow "err") action)
-              (code-awareness--handle-error domain action error-data)
-            (if (and (string= flow "req") action)
+        ;; Detect message type by presence of error field or _msgId
+        (if (and error-data action)
+            ;; Has 'err' field - this is an error response
+            (code-awareness--handle-error domain action error-data)
+          (if (and msg-id action response-data)
+              ;; Has _msgId and data - this is a response
+              (code-awareness--handle-response domain action response-data)
+            (if action
+                ;; Has action but no _msgId - this is a request/event
                 (progn
                   (code-awareness-log-info "Received request: %s:%s" domain action)
                   ;; Handle events using the events table
@@ -871,7 +879,7 @@ Argument HIGHLIGHT-DATA the array of lines to highlight."
   "Handle an IPC response.
 Argument DOMAIN string describing the event domain, e.g. code, auth, etc.
 Argument ACTION string describing the event action, e.g. auth:info.
-Argument DATA additional data received from Code Awareness (JSON)."
+Argument DATA additional data received from Kawa Code (JSON)."
   (let* ((key (format "res:%s:%s" domain action))
          (handler (gethash key code-awareness--response-handlers)))
     ;; Handle broadcast responses automatically (they may come from external sources)
@@ -894,7 +902,7 @@ Argument DATA additional data received from Code Awareness (JSON)."
   "Handle response from code:active-path request.
 EXPECTED-FILE-PATH is the
 file path that was originally requested (for validation).
-Argument DATA the data received from Code Awareness application."
+Argument DATA the data received from Kawa Code application."
   (code-awareness-log-info "Received code:active-path response")
   ;; Add the project to our store
   (code-awareness--add-project data)
@@ -922,7 +930,7 @@ Argument DATA the data received from Code Awareness application."
 
 (defun code-awareness--handle-auth-info-response (data)
   "Handle response from auth:info request.
-Argument DATA the data received from Code Awareness application."
+Argument DATA the data received from Kawa Code application."
   (if (and data (listp data) (alist-get 'user data))
       (progn
         (setq code-awareness--user (alist-get 'user data))
@@ -937,7 +945,7 @@ Argument DATA the data received from Code Awareness application."
 
 (defun code-awareness--handle-peer-select (peer-data)
   "Handle peer selection event from Muninn app.
-Argument PEER-DATA the data received from Code Awareness (peer info)."
+Argument PEER-DATA the data received from Kawa Code (peer info)."
   (code-awareness-log-info "Peer selected: %s" (alist-get 'name peer-data))
   (setq code-awareness--selected-peer peer-data)
 
@@ -965,7 +973,7 @@ Argument PEER-DATA the data received from Code Awareness (peer info)."
 
 (defun code-awareness--handle-peer-diff-response (data)
   "Handle response from code:diff-peer request.
-Argument DATA the data received from Code Awareness (peer file info)."
+Argument DATA the data received from Kawa Code (peer file info)."
   (code-awareness-log-info "Received peer diff response")
   (let* ((peer-file (alist-get 'peerFile data))
          (title (alist-get 'title data))
@@ -984,7 +992,7 @@ Argument DATA the data received from Code Awareness (peer file info)."
 (defun code-awareness--handle-open-peer-file-response (data)
   "Handle response from code:open-peer-file request.
 The local service has downloaded/extracted the file and provides the full path.
-Argument DATA the data received from Code Awareness local service."
+Argument DATA the data received from Kawa Code local service."
   (code-awareness-log-info "Received open-peer-file response")
   (let* ((file-path (alist-get 'filePath data))
          (file-paths (alist-get 'filePaths data))
@@ -1188,7 +1196,7 @@ Argument BRANCH-OR-DATA either a string branch name or an alist with diff data."
 
 (defun code-awareness--handle-context-open-rel (data)
   "Handle context open relative event.
-Argument DATA the data received from Code Awareness application."
+Argument DATA the data received from Kawa Code application."
   (code-awareness-log-info "Context open relative requested: %s" (alist-get 'sourceFile data))
   (let ((source-file (alist-get 'sourceFile data)))
     (when source-file
@@ -1199,7 +1207,7 @@ Argument DATA the data received from Code Awareness application."
 
 (defun code-awareness--handle-branch-diff-response (data)
   "Handle response from code:branch:select request.
-Argument DATA the data received from Code Awareness application."
+Argument DATA the data received from Kawa Code application."
   (code-awareness-log-info "Received branch diff response")
   (let* ((peer-file (alist-get 'peerFile data))
          (user-file (alist-get 'userFile data))
@@ -1229,14 +1237,12 @@ Argument ERROR-DATA incoming error message."
       (funcall handler error-data))))
 
 (defun code-awareness--transmit (action data)
-  "Transmit a message to the Code Awareness IPC.
-Argument ACTION the action to send to Code Awareness app,
+  "Transmit a message to the Kawa Code IPC.
+Argument ACTION the action to send to Kawa Code app,
 e.g. code:active-path, auth:info, etc.
-Argument DATA data to send to Code Awareness application."
+Argument DATA data to send to Kawa Code application."
   (let* ((domain (if (member action '("auth:info" "auth:login")) "*" "code"))
-         (flow "req")
-         (message (json-encode `((flow . ,flow)
-                                 (domain . ,domain)
+         (message (json-encode `((domain . ,domain)
                                  (action . ,action)
                                  (data . ,data)
                                  (caw . ,code-awareness--guid)))))
@@ -1360,8 +1366,7 @@ Argument ERROR-DATA error message received from the request."
 (defun code-awareness--register-client ()
   "Register this client with the catalog service."
   (unless code-awareness--client-registered
-    (let ((message (json-encode `((flow . "req")
-                                  (domain . "*")
+    (let ((message (json-encode `((domain . "*")
                                   (action . "clientId")
                                   (data . ,code-awareness--guid)
                                   (caw . ,code-awareness--guid)))))
@@ -1387,7 +1392,7 @@ Argument ERROR-DATA error message received from the request."
   (run-with-timer 0.1 nil #'code-awareness--send-auth-info))
 
 (defun code-awareness--request-tmp-dir ()
-  "Request temp directory from the Code Awareness local service."
+  "Request temp directory from the Kawa Code local service."
   (code-awareness-log-info "Requesting temp directory from local service")
   (if (and code-awareness--ipc-process
            (eq (process-status code-awareness--ipc-process) 'open))
@@ -1398,7 +1403,7 @@ Argument ERROR-DATA error message received from the request."
 
 (defun code-awareness--handle-get-tmp-dir-response (data)
   "Handle response from code:get-tmp-dir request.
-Argument DATA the data received from Code Awareness application."
+Argument DATA the data received from Kawa Code application."
   (let ((tmp-dir (alist-get 'tmpDir data)))
     (when tmp-dir
       (setq code-awareness--tmp-dir tmp-dir)
@@ -1414,7 +1419,7 @@ Argument DATA the data received from Code Awareness application."
         (code-awareness-log-info "Added actual temp directory to recentf-exclude: %s" tmp-dir)))))
 
 (defun code-awareness--send-auth-info ()
-  "Send auth:info request to the Code Awareness IPC."
+  "Send auth:info request to the Kawa Code IPC."
   (code-awareness-log-info "Sending auth:info request")
   (if (and code-awareness--ipc-process
            (eq (process-status code-awareness--ipc-process) 'open))
@@ -1425,7 +1430,7 @@ Argument DATA the data received from Code Awareness application."
   "Maximum number of polling attempts.")
 
 (defun code-awareness--poll-for-local-service ()
-  "Poll for Code Awareness IPC socket with exponential backoff."
+  "Poll for Kawa Code IPC socket with exponential backoff."
   (let ((socket-path (code-awareness--get-socket-path code-awareness--guid)))
     (if (file-exists-p socket-path)
         (progn
@@ -1433,9 +1438,9 @@ Argument DATA the data received from Code Awareness application."
           (code-awareness--connect-to-local-service))
       (if (>= code-awareness--poll-attempts code-awareness--max-poll-attempts)
           (progn
-            (code-awareness-log-error "Failed to find Code Awareness IPC socket after %d attempts"
+            (code-awareness-log-error "Failed to find Kawa Code IPC socket after %d attempts"
                                      code-awareness--max-poll-attempts)
-            (message "Failed to connect to Code Awareness IPC after %d attempts"
+            (message "Failed to connect to Kawa Code IPC after %d attempts"
                      code-awareness--max-poll-attempts))
         (setq code-awareness--poll-attempts (1+ code-awareness--poll-attempts))
         ;; Exponential backoff: 0.5s, 1s, 2s, 4s, 8s, etc.
@@ -1443,7 +1448,7 @@ Argument DATA the data received from Code Awareness application."
           (run-with-timer delay nil #'code-awareness--poll-for-local-service))))))
 
 (defun code-awareness--connect-to-local-service ()
-  "Connect to the Code Awareness IPC with retry logic."
+  "Connect to the Kawa Code IPC with retry logic."
   (let* ((socket-path (code-awareness--get-socket-path code-awareness--guid))
          (process-name (format "code-awareness-ipc-%s" code-awareness--guid))
          (buffer-name (format "*%s*" process-name)))
@@ -1459,13 +1464,13 @@ Argument DATA the data received from Code Awareness application."
                  :sentinel #'code-awareness--ipc-sentinel
                  :filter #'code-awareness--ipc-filter
                  :noquery t))
-          (code-awareness-log-info "Connected to Code Awareness IPC")
+          (code-awareness-log-info "Connected to Kawa Code IPC")
           ;; Set up a timeout to detect stuck connections
           (run-with-timer 5.0 nil #'code-awareness--check-connection-timeout)
           ;; Set up a fallback to trigger workspace init if sentinel doesn't fire
           (run-with-timer 1.0 nil #'code-awareness--fallback-workspace-init))
       (error
-       (code-awareness-log-warn "Failed to connect to Code Awareness IPC, will retry in 5 seconds")
+       (code-awareness-log-warn "Failed to connect to Kawa Code IPC, will retry in 5 seconds")
        (code-awareness-log-warn "Error: %s" err)
        ;; Schedule retry
        (run-with-timer 5.0 nil #'code-awareness--connect-to-local-service)))))
@@ -1491,7 +1496,7 @@ Argument DATA the data received from Code Awareness application."
     (code-awareness--init-workspace)))
 
 (defun code-awareness--force-cleanup ()
-  "Force cleanup of all Code Awareness processes and state."
+  "Force cleanup of all Kawa Code processes and state."
   (code-awareness-log-info "Force cleaning up all processes")
 
   ;; Cancel any pending timers
@@ -1551,8 +1556,7 @@ Argument DATA the data received from Code Awareness application."
   ;; Send disconnect message to catalog
   (when (and code-awareness--ipc-catalog-process
              (eq (process-status code-awareness--ipc-catalog-process) 'open))
-    (let ((message (json-encode `((flow . "req")
-                                  (domain . "*")
+    (let ((message (json-encode `((domain . "*")
                                   (action . "clientDisconnect")
                                   (data . ,code-awareness--guid)
                                   (caw . ,code-awareness--guid)))))
@@ -1584,7 +1588,7 @@ Argument DATA the data received from Code Awareness application."
         (run-with-timer code-awareness-update-delay nil #'code-awareness--update)))
 
 (defun code-awareness--update ()
-  "Update Code Awareness for the current buffer."
+  "Update Kawa Code for the current buffer."
   (setq code-awareness--update-timer nil)
   (when (and code-awareness--active-buffer
              (buffer-live-p code-awareness--active-buffer)
@@ -1628,13 +1632,13 @@ Argument DATA the data received from Code Awareness application."
 
 ;;;###autoload
 (defun code-awareness-refresh ()
-  "Refresh Code Awareness data."
+  "Refresh Kawa Code data."
   (interactive)
   (code-awareness--refresh-active-file))
 
 ;;;###autoload
 (defun code-awareness-clear-all-highlights ()
-  "Clear all Code Awareness highlight from all buffers."
+  "Clear all Kawa Code highlight from all buffers."
   (interactive)
   (code-awareness--clear-all-highlights)
   (message "Cleared all highlights"))
@@ -1674,8 +1678,8 @@ Argument DATA the data received from Code Awareness application."
 
 ;;;###autoload
 (define-minor-mode code-awareness-mode
-  "Toggle Code Awareness mode.
-Enable Code Awareness functionality for collaborative development."
+  "Toggle Kawa Code mode.
+Enable Kawa Code functionality for collaborative development."
   :init-value nil
   :global t
   :lighter " CAW"
@@ -1686,7 +1690,7 @@ Enable Code Awareness functionality for collaborative development."
     (code-awareness--disable)))
 
 (defun code-awareness--enable ()
-  "Enable Code Awareness."
+  "Enable Kawa Code."
   (code-awareness--init-config)
   (code-awareness--init-store)
   (code-awareness--init-event-handlers)
@@ -1708,10 +1712,10 @@ Enable Code Awareness functionality for collaborative development."
     (add-to-list 'recentf-exclude
                  (concat "^" (regexp-quote (expand-file-name code-awareness--tmp-dir))))
     (code-awareness-log-info "Added temp directory to recentf-exclude: %s" code-awareness--tmp-dir))
-  (code-awareness-log-info "Code Awareness enabled"))
+  (code-awareness-log-info "Kawa Code enabled"))
 
 (defun code-awareness--disable ()
-  "Disable Code Awareness."
+  "Disable Kawa Code."
   (code-awareness-log-info "Disabling and disconnecting")
 
   ;; Remove hooks
@@ -1732,7 +1736,7 @@ Enable Code Awareness functionality for collaborative development."
   ;; Clear the store
   (code-awareness--clear-store)
 
-  (code-awareness-log-info "Code Awareness disabled"))
+  (code-awareness-log-info "Kawa Code disabled"))
 
 ;;; Cleanup on Emacs exit
 
@@ -1756,7 +1760,7 @@ Enable Code Awareness functionality for collaborative development."
             (code-awareness--refresh-active-file)))))))
 
 (defun code-awareness--cleanup-on-exit ()
-  "Cleanup Code Awareness when Emacs is about to exit."
+  "Cleanup Kawa Code when Emacs is about to exit."
   (when code-awareness-mode
     (code-awareness-log-info "Emacs exiting, disabling code-awareness-mode")
     ;; Disable the mode which will trigger proper cleanup including disconnect messages

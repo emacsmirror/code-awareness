@@ -1,6 +1,6 @@
-;;; doom-config.el --- Doom Emacs configuration for Code Awareness
+;;; doom-config.el --- Doom Emacs configuration for Kawa Code
 
-;; Code Awareness DEV configuration for Doom Emacs
+;; Kawa Code DEV configuration for Doom Emacs
 ;; Add this to your ~/.doom.d/config.el file
 
 ;; Method 1: Load from a specific path (for development)
@@ -10,7 +10,7 @@
     (add-to-list 'load-path code-awareness-path)
     (require 'code-awareness)))
 
-;; Method 2: Enable Code Awareness by default
+;; Method 2: Enable Kawa Code by default
 ;; (code-awareness-mode 1)
 
 ;; Method 3: Enable for specific modes

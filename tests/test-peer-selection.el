@@ -8,7 +8,7 @@
   "Test that peer selection messages are handled correctly."
   (let ((test-peer-data '((_id . "67bc3432cf9b5efe459008dd")
                           (name . "Alice")
-                          (company . "Code Awareness")
+                          (company . "Kawa Code")
                           (phone . "123-123-1234")
                           (email . "alice@code-awareness.com")
                           (createdAt . "2025-02-24T08:56:18.540Z")
@@ -55,7 +55,7 @@
 
 (defun test-ipc-message-parsing ()
   "Test that IPC messages are parsed correctly for peer selection."
-  (let ((test-message "{\"flow\":\"req\",\"domain\":\"code\",\"action\":\"peer:select\",\"data\":{\"_id\":\"67bc3432cf9b5efe459008dd\",\"name\":\"Alice\",\"company\":\"Code Awareness\",\"phone\":\"123-123-1234\",\"email\":\"alice@code-awareness.com\",\"createdAt\":\"2025-02-24T08:56:18.540Z\",\"active\":true,\"updatedAt\":\"2025-08-29T00:38:56.447Z\",\"lang\":\"en\"},\"err\":\"\",\"caw\":\"0\"}"))
+  (let ((test-message "{\"flow\":\"req\",\"domain\":\"code\",\"action\":\"peer:select\",\"data\":{\"_id\":\"67bc3432cf9b5efe459008dd\",\"name\":\"Alice\",\"company\":\"Kawa Code\",\"phone\":\"123-123-1234\",\"email\":\"alice@code-awareness.com\",\"createdAt\":\"2025-02-24T08:56:18.540Z\",\"active\":true,\"updatedAt\":\"2025-08-29T00:38:56.447Z\",\"lang\":\"en\"},\"err\":\"\",\"caw\":\"0\"}"))
     ;; Mock the peer selection handler to track calls
     (let ((peer-select-called nil))
       (flet ((code-awareness--handle-peer-select (data)

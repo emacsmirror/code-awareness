@@ -1,16 +1,16 @@
-# Code Awareness for Emacs - Development Status
+# Kawa Code for Emacs - Development Status
 
-This document describes the current development status of Code Awareness for Emacs.
+This document describes the current development status of Kawa Code for Emacs.
 
 ## Overview
 
-Code Awareness for Emacs is now a **fully functional implementation** that provides all the core features needed for collaborative development, including code highlighting, peer diff viewing, and robust IPC communication.
+Kawa Code for Emacs is now a **fully functional implementation** that provides all the core features needed for collaborative development, including code highlighting, peer diff viewing, and robust IPC communication.
 
 ## What We've Accomplished
 
 ### **Phase 1: Core Infrastructure** - COMPLETE
 - **Package Structure**: Complete package with proper initialization
-- **IPC Communication**: Full communication with Code Awareness application using named pipes/sockets
+- **IPC Communication**: Full communication with Kawa Code application using named pipes/sockets
 - **Configuration Management**: Comprehensive settings and customization options
 - **Logging System**: Multi-level logging with dedicated buffer
 - **Buffer Management**: Active buffer tracking and file monitoring
@@ -29,8 +29,8 @@ Code Awareness for Emacs is now a **fully functional implementation** that provi
 ### **Phase 4: Advanced Features** - COMPLETE
 - **Peer Diff Viewing**: Full peer diff functionality with diff buffers
 - **Repository Integration**: Active path detection and project management
-- **Authentication System**: Complete auth flow with Code Awareness application
-- **Event Handling**: Comprehensive event system for all Code Awareness features
+- **Authentication System**: Complete auth flow with Kawa Code application
+- **Event Handling**: Comprehensive event system for all Kawa Code features
 
 ### **Phase 5: Polish and Optimization** - COMPLETE
 - **Compilation Clean**: All compilation warnings and errors resolved
@@ -40,7 +40,7 @@ Code Awareness for Emacs is now a **fully functional implementation** that provi
 
 ## Current Status
 
-**Code Awareness for Emacs is now PRODUCTION READY** with:
+**Kawa Code for Emacs is now PRODUCTION READY** with:
 
 ✅ **Full Feature Parity** with VS Code extension  
 ✅ **Robust IPC Communication** with automatic reconnection  
@@ -55,12 +55,12 @@ Code Awareness for Emacs is now a **fully functional implementation** that provi
 ### Standard Emacs Configuration
 
 ```elisp
-;; Code Awareness Configuration
+;; Kawa Code Configuration
 (let ((code-awareness-path "/path/to/ca.emacs/"))
   (when (file-exists-p code-awareness-path)
     (add-to-list 'load-path (expand-file-name "src/elisp" code-awareness-path))
     (require 'code-awareness)
-    (message "Code Awareness loaded successfully")))
+    (message "Kawa Code loaded successfully")))
 ```
 
 ### Spacemacs Configuration
@@ -69,12 +69,12 @@ Add to your `~/.spacemacs` file in the `dotspacemacs/user-config` section:
 
 ```elisp
 (defun dotspacemacs/user-config ()
-  ;; Code Awareness Configuration
+  ;; Kawa Code Configuration
   (let ((code-awareness-path "/path/to/ca.emacs/"))
     (when (file-exists-p code-awareness-path)
       (add-to-list 'load-path (expand-file-name "src/elisp" code-awareness-path))
       (require 'code-awareness)
-      (message "Code Awareness loaded successfully"))))
+      (message "Kawa Code loaded successfully"))))
 ```
 
 ### Loading Compiled Version
@@ -119,8 +119,8 @@ Emacs automatically loads the compiled `.elc` files when available.
 
 ### Commands
 
-- `M-x code-awareness-mode` - Toggle Code Awareness mode
-- `M-x code-awareness-refresh` - Refresh Code Awareness data
+- `M-x code-awareness-mode` - Toggle Kawa Code mode
+- `M-x code-awareness-refresh` - Refresh Kawa Code data
 - `M-x code-awareness-clear-all-highlights` - Clear highlights from all buffers
 - `M-x code-awareness-auth-status` - Show authentication status
 - `M-x code-awareness-connection-status` - Show connection status
@@ -189,7 +189,7 @@ make test       # Run the test suite
 
 ### Connection Issues
 
-1. **Check if Code Awareness application is running**:
+1. **Check if Kawa Code application is running**:
    ```bash
    # Check if the catalog socket exists
    ls -la ~/.kawa-code/sockets/caw.catalog
@@ -207,8 +207,8 @@ make test       # Run the test suite
 
 ### Common Issues
 
-- **"Connection failed"**: Code Awareness application not running
-- **"Unknown message format"**: Protocol mismatch with Code Awareness application
+- **"Connection failed"**: Kawa Code application not running
+- **"Unknown message format"**: Protocol mismatch with Kawa Code application
 - **"Socket error"**: Permission issues with socket files
 - **Highlights not appearing**: Check if `code-awareness-mode` is enabled
 
@@ -218,12 +218,12 @@ While the core functionality is complete, potential future improvements include:
 
 - **Performance Optimizations**: Further optimization for large files
 - **Customization Options**: More theme and behavior customization
-- **Extensibility Options**: Build your own Code Awareness extensions
+- **Extensibility Options**: Build your own Kawa Code extensions
 
 ## License
 
 This package is licensed under the GPLv3. 
-It requires the Code Awareness binary (proprietary, licensed separately) to function fully.
+It requires the Kawa Code binary (proprietary, licensed separately) to function fully.
 
 ## Contributing
 

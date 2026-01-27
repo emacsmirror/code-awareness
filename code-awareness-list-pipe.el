@@ -1,4 +1,4 @@
-;;; code-awareness-list-pipe.el --- List-Pipes for Code Awareness -*- lexical-binding: t -*-
+;;; code-awareness-list-pipe.el --- List-Pipes for Kawa Code -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2018 Isaac Lewis
 

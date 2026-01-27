@@ -1,4 +1,4 @@
-;;; code-awareness-process-sockets.el --- Process sockets for Code Awareness  -*- lexical-binding: t -*-
+;;; code-awareness-process-sockets.el --- Process sockets for Kawa Code  -*- lexical-binding: t -*-
 
 ;; This is an embedded version of process-sockets functionality
 ;; to avoid external dependencies. Original: https://github.com/IkeLewis/process-sockets

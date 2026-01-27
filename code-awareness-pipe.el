@@ -1,4 +1,4 @@
-;;; code-awareness-pipe.el --- Pipes for Code Awareness -*- lexical-binding: t -*-
+;;; code-awareness-pipe.el --- Pipes for Kawa Code -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2018 Isaac Lewis
 
@@ -86,7 +86,7 @@
 ;;
 ;; The columns below show the state of the buffer and its
 ;; corresponding variables immediately after the given event occurs.
-;;; Keywords: code awareness, collaboration, development, convenience tools
+;;; Keywords: Kawa Code, collaboration, development, convenience tools
 ;; Homepage: https://github.com/CodeAwareness/ca.emacs;
 ;; |-----------------+--------+----------+-----------+----------+----------|
 ;; | event           | buffer | num_writ | write_pos | num_read | read_pos |
