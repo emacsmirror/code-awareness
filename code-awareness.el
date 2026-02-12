@@ -5,7 +5,7 @@
 ;; Keywords: tools, convenience, vc
 ;; Homepage: https://github.com/CodeAwareness/ca.emacs
 
-;; Version: 1.0.0
+;; Version: 2.0.0
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -55,20 +55,11 @@
 (defconst code-awareness--extract-repo-dir "extract"
   "Directory name for extracted repository files.")
 
-(defconst code-awareness--pipe-catalog "catalog"
-  "Catalog pipe name.")
-
 ;;;###autoload
 (defgroup code-awareness-config nil
   "Kawa Code configuration."
   :group 'code-awareness
   :prefix "code-awareness-")
-
-;;;###autoload
-(defcustom code-awareness-catalog "catalog"
-  "Catalog name for Kawa Code."
-  :type 'string
-  :group 'code-awareness-config)
 
 ;;;###autoload
 (defcustom code-awareness-highlight-intensity 0.3
@@ -97,6 +88,12 @@
 ;;;###autoload
 (defcustom code-awareness-update-delay 0.5
   "Delay in seconds before running a Kawa Code update."
+  :type 'number
+  :group 'code-awareness-config)
+
+;;;###autoload
+(defcustom code-awareness-selection-delay 0.15
+  "Delay in seconds before sending cursor position to Muninn."
   :type 'number
   :group 'code-awareness-config)
 
@@ -182,29 +179,23 @@ Argument DARK-COLOR color for dark theme."
 
 ;;; Internal Variables
 
-(defvar code-awareness--guid nil
-  "Unique identifier for this Emacs instance.")
-
-(defvar code-awareness--client-registered nil
-  "Whether the client has been registered with the catalog service.")
+(defvar code-awareness--caw nil
+  "Client ID assigned by Muninn via handshake.")
 
 (defvar code-awareness--ipc-process nil
-  "IPC process for communicating with the Kawa Code IPC.")
-
-(defvar code-awareness--ipc-catalog-process nil
-  "IPC process for catalog communication.")
+  "IPC process for communicating with Muninn.")
 
 (defvar code-awareness--response-handlers (make-hash-table :test 'equal)
   "Hash table of response handlers for IPC requests.")
+
+(defvar code-awareness--pending-requests (make-hash-table :test 'equal)
+  "Hash table mapping _msgId to callback for request-response matching.")
 
 (defvar code-awareness--active-project nil
   "Currently active project data.")
 
 (defvar code-awareness--active-buffer nil
   "Currently active buffer.")
-
-(defvar code-awareness--poll-attempts 0
-  "Number of polling attempts for Kawa Code IPC socket.")
 
 (defvar code-awareness--update-timer nil
   "Timer for debounced updates.")
@@ -214,6 +205,18 @@ Argument DARK-COLOR color for dark theme."
 
 (defvar code-awareness--config nil
   "Configuration data.")
+
+(defvar code-awareness--mode-line-string " Kawa"
+  "Current mode-line string reflecting connection/auth state.")
+
+(defvar code-awareness--selection-timer nil
+  "Timer for debounced cursor position updates.")
+
+(defvar code-awareness--last-cursor-line nil
+  "Last cursor line number sent to Muninn.")
+
+(defvar code-awareness--is-cycling nil
+  "Non-nil when actively cycling through peer diff blocks.")
 
 ;;; Logging Variables
 
@@ -392,8 +395,7 @@ Optional argument ARGS formatting."
 (defun code-awareness--init-config ()
   "Initialize configuration."
   (setq code-awareness--config
-        `((catalog . ,code-awareness-catalog)
-          (update-delay . ,code-awareness-update-delay)))
+        `((update-delay . ,code-awareness-update-delay)))
   (code-awareness-log-info "Configuration initialized"))
 
 (defun code-awareness--init-store ()
@@ -433,7 +435,7 @@ Argument HANDLER-FUNCTION a ref to the function that should handle the event."
   (code-awareness--register-event-handler "context:add" #'code-awareness--handle-context-add)
   (code-awareness--register-event-handler "context:del" #'code-awareness--handle-context-del)
   (code-awareness--register-event-handler "context:open-rel" #'code-awareness--handle-context-open-rel)
-  ;; Add more event handlers here as needed
+  (code-awareness--register-event-handler "sync:setup" #'code-awareness--handle-sync-setup-broadcast)
 
   (code-awareness-log-info "Event handlers initialized"))
 
@@ -449,8 +451,7 @@ Argument HANDLER-FUNCTION a ref to the function that should handle the event."
         code-awareness--selected-peer nil
         code-awareness--color-theme 1
         code-awareness--tmp-dir (expand-file-name "caw.emacs" (temporary-file-directory))
-        code-awareness--peer-fs (make-hash-table :test 'equal)
-        code-awareness--poll-attempts 0)
+        code-awareness--peer-fs (make-hash-table :test 'equal))
   (code-awareness--init-store))
 
 (defun code-awareness--reset-store ()
@@ -516,7 +517,7 @@ Argument HANDLER-FUNCTION a ref to the function that should handle the event."
           (code-awareness-log-info "Refreshing active file %s" fpath)
           (let ((message-data `((fpath . ,(code-awareness--cross-platform-path fpath))
                                 (doc . ,doc)
-                                (caw . ,code-awareness--guid))))
+                                (caw . ,code-awareness--caw))))
             (code-awareness--transmit "active-path" message-data)
             (code-awareness--setup-response-handler "code" "active-path" fpath)))))))
 
@@ -783,44 +784,60 @@ Argument HIGHLIGHT-DATA the array of lines to highlight."
                           (lambda ()
                             (code-awareness--add-hl-line-highlight buffer line type properties))))))))
 
+;;; Mode-Line
+
+(defun code-awareness--update-mode-line ()
+  "Update the mode-line string based on current state."
+  (setq code-awareness--mode-line-string
+        (cond
+         ((not code-awareness--connected) " Kawa[off]")
+         (code-awareness--authenticated
+          (let ((name (alist-get 'name code-awareness--user)))
+            (if name (format " Kawa[%s]" name) " Kawa")))
+         (t " Kawa")))
+  (force-mode-line-update t))
+
 ;;; IPC Communication
 
-(defun code-awareness--generate-guid ()
-  "Generate a unique GUID for this Emacs instance."
-  (concat (number-to-string (emacs-pid)) "-" (number-to-string (random 1000000))))
+(defun code-awareness--generate-msg-id ()
+  "Generate a UUID-like message ID for request-response correlation."
+  (format "%s-%04x-%04x"
+          (format-time-string "%s%3N")
+          (random 65535)
+          (random 65535)))
 
-(defun code-awareness--get-socket-path (guid)
-  "Get the socket path for the given GUID."
+(defun code-awareness--get-muninn-socket-path ()
+  "Get the muninn socket path for direct connection."
   (if (eq system-type 'windows-nt)
-      (format "\\\\.\\pipe\\caw.%s" guid)
-    (format "%s/sockets/caw.%s" (expand-file-name "~/.kawa-code") guid)))
-
-(defun code-awareness--get-catalog-socket-path ()
-  "Get the catalog socket path."
-  (code-awareness--get-socket-path code-awareness-catalog))
+      "\\\\.\\pipe\\muninn"
+    (format "%s/sockets/muninn" (expand-file-name "~/.kawa-code"))))
 
 (defun code-awareness--ipc-sentinel (_process event)
   "Handle IPC process sentinel EVENTs."
-  (code-awareness-log-info "Kawa Code IPC: %s" event)
+  (code-awareness-log-info "Muninn IPC: %s" event)
   (cond
    ((string-match "failed" event)
-    (code-awareness-log-error "Kawa Code IPC connection failed")
+    (code-awareness-log-error "Muninn connection failed")
     (setq code-awareness--connected nil)
+    (code-awareness--update-mode-line)
     ;; Retry connection
-    (run-with-timer 2.0 nil #'code-awareness--connect-to-local-service))
+    (run-with-timer 2.0 nil #'code-awareness--connect-to-muninn))
    ((string-match "exited" event)
-    (code-awareness-log-warn "Kawa Code IPC connection closed")
-    (setq code-awareness--connected nil))
-   ((string-match "connection broken by remote peer" event)
-    (code-awareness-log-warn "Kawa Code IPC rejected connection")
+    (code-awareness-log-warn "Muninn connection closed")
     (setq code-awareness--connected nil)
+    (code-awareness--update-mode-line))
+   ((string-match "connection broken by remote peer" event)
+    (code-awareness-log-warn "Muninn rejected connection")
+    (setq code-awareness--connected nil)
+    (code-awareness--update-mode-line)
     ;; Retry connection after a delay
-    (run-with-timer 2.0 nil #'code-awareness--connect-to-local-service))
+    (run-with-timer 2.0 nil #'code-awareness--connect-to-muninn))
    ((string-match "open" event)
-    (code-awareness-log-info "Successfully connected to Kawa Code IPC")
+    (code-awareness-log-info "Successfully connected to Muninn")
     (setq code-awareness--connected t)
-    ;; Initialize workspace after connection (like VS Code)
-    (code-awareness--init-workspace))
+    (code-awareness--update-mode-line)
+    ;; Send handshake to receive CAW ID from Muninn
+    (code-awareness--send-handshake))
    (t
     (code-awareness-log-warn "Unknown IPC sentinel event: %s" event))))
 
@@ -835,14 +852,16 @@ Argument HIGHLIGHT-DATA the array of lines to highlight."
 
 (defun code-awareness--process-ipc-messages ()
   "Process complete IPC messages from the buffer."
-  (let ((delimiter "\f"))
+  (let ((delimiter "\n"))
     (goto-char (point-min))
     (while (search-forward delimiter nil t)
       (let* ((end-pos (point))
              (start-pos (point-min))
              (message (buffer-substring-no-properties start-pos (1- end-pos))))
         (delete-region start-pos end-pos)
-        (code-awareness--handle-ipc-message message)))))
+        ;; Skip empty messages
+        (unless (string-empty-p (string-trim message))
+          (code-awareness--handle-ipc-message message))))))
 
 (defun code-awareness--handle-ipc-message (message)
   "Handle a single IPC MESSAGE."
@@ -853,50 +872,68 @@ Argument HIGHLIGHT-DATA the array of lines to highlight."
              (response-data (alist-get 'data data))
              (error-data (alist-get 'err data))
              (msg-id (alist-get '_msgId data)))
-        (code-awareness-log-info "%s:%s" domain action)
-        ;; Detect message type by presence of error field or _msgId
-        (if (and error-data action)
-            ;; Has 'err' field - this is an error response
-            (code-awareness--handle-error domain action error-data)
-          (if (and msg-id action response-data)
-              ;; Has _msgId and data - this is a response
-              (code-awareness--handle-response domain action response-data)
-            (if action
-                ;; Has action but no _msgId - this is a request/event
-                (progn
-                  (code-awareness-log-info "Received request: %s:%s" domain action)
-                  ;; Handle events using the events table
-                  (let ((event-key (format "%s:%s" domain action))
-                        (handler (gethash action code-awareness--events-table)))
+        ;; Normalize JSON null → nil for msg-id (Emacs json-read may
+        ;; yield :json-null for JSON null values).
+        (when (eq msg-id :json-null) (setq msg-id nil))
+        (code-awareness-log-info "%s:%s (msgId: %s)" domain action msg-id)
+
+        ;; First check for _msgId correlation (new pattern)
+        (if (and msg-id (gethash msg-id code-awareness--pending-requests))
+            ;; Found pending request by _msgId - call its handler
+            (let ((handler (gethash msg-id code-awareness--pending-requests)))
+              (remhash msg-id code-awareness--pending-requests)
+              (if error-data
+                  (code-awareness-log-error "Request %s failed: %s" msg-id error-data)
+                (funcall handler response-data)))
+
+          ;; Fallback: no _msgId match
+          (if (and error-data action)
+              ;; Has 'err' field - this is an error response
+              (code-awareness--handle-error domain action error-data)
+            (when action
+              ;; Try registered response handlers first
+              (let ((handled (code-awareness--handle-response domain action response-data)))
+                (unless handled
+                  ;; Not a known response — try events table
+                  ;; (broadcasts with data end up here, e.g. peer:select)
+                  (let ((handler (gethash action code-awareness--events-table)))
                     (if handler
-                        (funcall handler response-data)
-                      (code-awareness-log-info "No handler for event: %s" event-key))))
-              (code-awareness-log-warn "Unknown message format: %s" message)))))
+                        (progn
+                          (code-awareness-log-info "Dispatching %s:%s via events table"
+                                                  domain action)
+                          (funcall handler response-data))
+                      (code-awareness-log-info "Unhandled message: %s:%s"
+                                              domain action)))))))))
     (error
      (code-awareness-log-error "Error parsing IPC message: %s" err))))
 
 (defun code-awareness--handle-response (domain action data)
-  "Handle an IPC response.
+  "Handle an IPC response.  Return non-nil if handled.
 Argument DOMAIN string describing the event domain, e.g. code, auth, etc.
 Argument ACTION string describing the event action, e.g. auth:info.
 Argument DATA additional data received from Kawa Code (JSON)."
   (let* ((key (format "res:%s:%s" domain action))
          (handler (gethash key code-awareness--response-handlers)))
-    ;; Handle broadcast responses automatically (they may come from external sources)
     (cond
-     ;; Auth responses from broadcast
-     ((and (string= domain "*") (or (string= action "auth:info") (string= action "auth:login")))
-      (code-awareness--handle-auth-info-response data))
-     ;; Open peer file response from local service broadcast
+     ;; Handshake response (Muninn doesn't echo _msgId)
+     ((and (string= domain "system") (string= action "handshake"))
+      (code-awareness--handle-handshake-response data) t)
+     ;; Auth responses — domain "auth" from Gardener
+     ((and (string= domain "auth") (or (string= action "info") (string= action "login")))
+      (code-awareness--handle-auth-info-response data) t)
+     ;; Open peer file broadcast from Muninn (domain "code")
      ((and (string= domain "code") (string= action "open-peer-file"))
-      (code-awareness--handle-open-peer-file-response data))
-     ;; Branch diff response from local service broadcast
+      (code-awareness--handle-open-peer-file-response data) t)
+     ;; Sync setup broadcast from Muninn (domain "code")
+     ((and (string= domain "code") (string= action "sync:setup"))
+      (code-awareness--handle-sync-setup-broadcast data) t)
+     ;; Branch diff broadcast from Muninn (domain "code")
      ((and (string= domain "code") (string= action "branch:select"))
-      (code-awareness--handle-branch-diff-response data))
+      (code-awareness--handle-branch-diff-response data) t)
      ;; Other responses with registered handlers
      (handler
       (remhash key code-awareness--response-handlers)
-      (funcall handler data)))))
+      (funcall handler data) t))))
 
 (defun code-awareness--handle-repo-active-path-response (data &optional expected-file-path)
   "Handle response from code:active-path request.
@@ -904,11 +941,13 @@ EXPECTED-FILE-PATH is the
 file path that was originally requested (for validation).
 Argument DATA the data received from Kawa Code application."
   (code-awareness-log-info "Received code:active-path response")
-  ;; Add the project to our store
-  (code-awareness--add-project data)
-  ;; Extract and apply highlights from the hl data structure
-  (let* ((hl-data (alist-get 'hl data))
+  ;; Unwrap project envelope (Muninn may wrap in { project: {...} })
+  (let* ((project (or (alist-get 'project data) data))
+         ;; Map highlights→hl (Muninn may use either field name)
+         (hl-data (or (alist-get 'hl project) (alist-get 'highlights project)))
          (buffer code-awareness--active-buffer))
+    ;; Add the unwrapped project to our store
+    (code-awareness--add-project project)
     ;; Debug logging for highlight data
     (code-awareness-log-info "hl-data received: %s" (prin1-to-string hl-data))
     (code-awareness-log-info "hl-data type: %s, length: %s"
@@ -936,33 +975,46 @@ Argument DATA the data received from Kawa Code application."
         (setq code-awareness--user (alist-get 'user data))
         (setq code-awareness--tokens (alist-get 'tokens data))
         (setq code-awareness--authenticated t)
+        (code-awareness--update-mode-line)
         (code-awareness-log-info "Authentication successful")
         (message "Authenticated as %s" (alist-get 'name code-awareness--user))
         ;; Refresh active file immediately after authentication (like VSCode's init function)
         (code-awareness--refresh-active-file))
     (setq code-awareness--authenticated nil)
+    (code-awareness--update-mode-line)
     (code-awareness-log-warn "No authentication data received - user needs to authenticate")))
 
 (defun code-awareness--handle-peer-select (peer-data)
   "Handle peer selection event from Muninn app.
 Argument PEER-DATA the data received from Kawa Code (peer info)."
-  (code-awareness-log-info "Peer selected: %s" (alist-get 'name peer-data))
+  (code-awareness-log-info "Peer selected: %s (data keys: %s)"
+                          (alist-get 'name peer-data)
+                          (mapcar #'car (when (listp peer-data) peer-data)))
   (setq code-awareness--selected-peer peer-data)
 
   ;; Get active project information
   (let* ((active-project code-awareness--active-project)
          (origin (alist-get 'origin active-project))
-         (fpath (alist-get 'activePath active-project)))
-    (if (not fpath)
-        (code-awareness-log-warn "No active file path for peer diff")
-      ;; Send request for peer diff
+         (fpath (alist-get 'activePath active-project))
+         ;; If broadcast includes origin, only respond if it matches
+         (broadcast-origin (alist-get 'origin peer-data)))
+    (code-awareness-log-info "Active project: origin=%s fpath=%s (project keys: %s)"
+                            origin fpath
+                            (mapcar #'car (when (listp active-project) active-project)))
+    (cond
+     ((not fpath)
+      (code-awareness-log-warn "No active file path for peer diff"))
+     ((and broadcast-origin origin
+           (not (string= broadcast-origin origin)))
+      (code-awareness-log-info "Ignoring peer:select for %s (active: %s)"
+                               broadcast-origin origin))
+     (t
       (let ((message-data `((origin . ,origin)
                             (fpath . ,fpath)
-                            (caw . ,code-awareness--guid)
+                            (caw . ,code-awareness--caw)
                             (peer . ,peer-data))))
         (code-awareness-log-info "Requesting peer diff for %s" fpath)
-        (code-awareness--transmit "diff-peer" message-data)
-        (code-awareness--setup-response-handler "code" "diff-peer")))))
+        (code-awareness--transmit "diff-peer" message-data))))))
 
 (defun code-awareness--handle-peer-unselect ()
   "Handle peer unselection event from Muninn app."
@@ -1111,7 +1163,7 @@ Argument BRANCH-OR-DATA either a string branch name or an alist with diff data."
    ((stringp branch-or-data)
     (code-awareness-log-info "Branch selected: %s (requesting diff)" branch-or-data)
     (let ((message-data `((branch . ,branch-or-data)
-                          (caw . ,code-awareness--guid))))
+                          (caw . ,code-awareness--caw))))
       (code-awareness--transmit "branch:select" message-data)
       (code-awareness--setup-response-handler "code" "branch:select")))
 
@@ -1121,7 +1173,7 @@ Argument BRANCH-OR-DATA either a string branch name or an alist with diff data."
       (code-awareness-log-info "Branch selected: %s (requesting diff)" branch-name)
       (when branch-name
         (let ((message-data `((branch . ,branch-name)
-                              (caw . ,code-awareness--guid))))
+                              (caw . ,code-awareness--caw))))
           (code-awareness--transmit "branch:select" message-data)
           (code-awareness--setup-response-handler "code" "branch:select")))))
 
@@ -1172,7 +1224,7 @@ Argument BRANCH-OR-DATA either a string branch name or an alist with diff data."
                             (selections . ,code-awareness--active-selections)
                             (context . ,context)
                             (op . "add")
-                            (caw . ,code-awareness--guid))))
+                            (caw . ,code-awareness--caw))))
         (code-awareness--transmit "context:apply" message-data)
         (code-awareness--setup-response-handler "code" "context:apply")))))
 
@@ -1190,7 +1242,7 @@ Argument BRANCH-OR-DATA either a string branch name or an alist with diff data."
                             (selections . ,code-awareness--active-selections)
                             (context . ,context)
                             (op . "del")
-                            (caw . ,code-awareness--guid))))
+                            (caw . ,code-awareness--caw))))
         (code-awareness--transmit "context:apply" message-data)
         (code-awareness--setup-response-handler "code" "context:apply")))))
 
@@ -1211,13 +1263,21 @@ Argument DATA the data received from Kawa Code application."
   (code-awareness-log-info "Received branch diff response")
   (let* ((peer-file (alist-get 'peerFile data))
          (user-file (alist-get 'userFile data))
-         (title (alist-get 'title data)))
-    (if (and peer-file user-file)
-        (progn
-          (code-awareness-log-info "Opening branch diff: %s vs %s" user-file peer-file)
-          (code-awareness--open-diff-view user-file peer-file title))
+         (title (alist-get 'title data))
+         (broadcast-origin (alist-get 'origin data))
+         (active-origin (alist-get 'origin code-awareness--active-project)))
+    ;; Filter: if broadcast includes origin, only respond if it matches
+    (cond
+     ((and broadcast-origin active-origin
+           (not (string= broadcast-origin active-origin)))
+      (code-awareness-log-info "Ignoring branch:select for %s (active: %s)"
+                               broadcast-origin active-origin))
+     ((and peer-file user-file)
+      (code-awareness-log-info "Opening branch diff: %s vs %s" user-file peer-file)
+      (code-awareness--open-diff-view user-file peer-file title))
+     (t
       (code-awareness-log-error "Missing file paths for branch diff: peer-file=%s, user-file=%s"
-                               peer-file user-file))))
+                               peer-file user-file)))))
 
 (defun code-awareness--handle-context-apply-response (_data)
   "Handle response from context:apply request."
@@ -1236,63 +1296,75 @@ Argument ERROR-DATA incoming error message."
       (remhash key code-awareness--response-handlers)
       (funcall handler error-data))))
 
-(defun code-awareness--transmit (action data)
+(defun code-awareness--transmit (action data &optional callback)
   "Transmit a message to the Kawa Code IPC.
-Argument ACTION the action to send to Kawa Code app,
-e.g. code:active-path, auth:info, etc.
-Argument DATA data to send to Kawa Code application."
-  (let* ((domain (if (member action '("auth:info" "auth:login")) "*" "code"))
-         (message (json-encode `((domain . ,domain)
-                                 (action . ,action)
+ACTION is parsed like VSCode: if it contains \\=`:' the prefix
+becomes the domain and the rest becomes the action.  E.g.
+\\='auth:info' → domain=auth action=info.  Otherwise domain
+defaults to \\='code'.
+Argument DATA data to send to Kawa Code application.
+Optional argument CALLBACK function to call when response is received."
+  (let* ((parts (split-string action ":" t))
+         (domain (if (> (length parts) 1) (car parts) "code"))
+         (actual-action (if (> (length parts) 1)
+                            (mapconcat #'identity (cdr parts) ":")
+                          action))
+         (msg-id (code-awareness--generate-msg-id))
+         (message (json-encode `((flow . "req")
+                                 (domain . ,domain)
+                                 (action . ,actual-action)
                                  (data . ,data)
-                                 (caw . ,code-awareness--guid)))))
+                                 (caw . ,code-awareness--caw)
+                                 (_msgId . ,msg-id)))))
     (if code-awareness--ipc-process
         (if (eq (process-status code-awareness--ipc-process) 'open)
             (progn
-              (code-awareness-log-info "Sending %s:%s" domain action)
-              (process-send-string code-awareness--ipc-process (concat message "\f"))
-              (code-awareness--setup-response-handler domain action))
+              (code-awareness-log-info "Sending %s:%s (msgId: %s)" domain actual-action msg-id)
+              ;; Store callback for this message ID if provided
+              (when callback
+                (puthash msg-id callback code-awareness--pending-requests))
+              (process-send-string code-awareness--ipc-process (concat message "\n"))
+              (code-awareness--setup-response-handler domain actual-action))
           (code-awareness-log-error "IPC process exists but is not open (status: %s)"
                                    (process-status code-awareness--ipc-process)))
       (code-awareness-log-error "No IPC process available for transmission"))))
 
 (defun code-awareness--setup-response-handler (domain action &optional file-path)
   "Setup response handlers for the given DOMAIN and ACTION.
+DOMAIN and ACTION are already split (e.g. \"auth\" \"info\").
 FILE-PATH is the file path associated with this request (for validation)."
-  (let ((res-key (format "res:%s:%s" domain action))
-        (err-key (format "err:%s:%s" domain action)))
+  (let* ((key (format "%s:%s" domain action))
+         (res-key (format "res:%s" key))
+         (err-key (format "err:%s" key)))
     ;; Set up specific handlers for known actions
     (cond
-     ((string= (format "%s:%s" domain action) "code:active-path")
+     ((string= key "code:active-path")
       (puthash res-key (lambda (data) (code-awareness--handle-repo-active-path-response data file-path)) code-awareness--response-handlers))
-     ((string= (format "%s:%s" domain action) "code:diff-peer")
+     ((string= key "code:diff-peer")
       (puthash res-key #'code-awareness--handle-peer-diff-response code-awareness--response-handlers))
-     ((string= (format "%s:%s" domain action) "code:branch:select")
+     ((string= key "branch:select")
       (puthash res-key #'code-awareness--handle-branch-diff-response code-awareness--response-handlers)
-      ;; Add specific error handler for branch:select
       (puthash err-key (lambda (err)
                          (code-awareness-log-error "Branch diff error: %s" err)
                          (message "Branch diff failed: %s" (or (alist-get 'message err) err)))
                code-awareness--response-handlers))
-     ((string= (format "%s:%s" domain action) "code:open-peer-file")
+     ((string= key "code:open-peer-file")
       (puthash res-key #'code-awareness--handle-open-peer-file-response code-awareness--response-handlers)
-      ;; Add specific error handler for open-peer-file
       (puthash err-key (lambda (err)
                          (code-awareness-log-error "Open peer file error: %s" err)
                          (message "Failed to open peer file: %s" (or (alist-get 'message err) err)))
                code-awareness--response-handlers))
-     ((string= (format "%s:%s" domain action) "code:get-tmp-dir")
+     ((string= key "code:get-tmp-dir")
       (puthash res-key #'code-awareness--handle-get-tmp-dir-response code-awareness--response-handlers))
-     ((string= (format "%s:%s" domain action) "code:context:apply")
+     ((string= key "context:apply")
       (puthash res-key #'code-awareness--handle-context-apply-response code-awareness--response-handlers))
-     ((or (string= (format "%s:%s" domain action) "*:auth:info")
-          (string= (format "%s:%s" domain action) "*:auth:login"))
+     ((or (string= key "auth:info") (string= key "auth:login"))
       (puthash res-key #'code-awareness--handle-auth-info-response code-awareness--response-handlers))
      (t
       (puthash res-key #'code-awareness--handle-success code-awareness--response-handlers)))
     ;; Set up generic error handler for actions without specific error handlers
-    (unless (or (string= (format "%s:%s" domain action) "code:branch:select")
-                (string= (format "%s:%s" domain action) "code:open-peer-file"))
+    (unless (or (string= key "branch:select")
+                (string= key "code:open-peer-file"))
       (puthash err-key #'code-awareness--handle-failure code-awareness--response-handlers))))
 
 (defun code-awareness--handle-success (data)
@@ -1308,96 +1380,108 @@ Argument ERROR-DATA error message received from the request."
 ;;; Connection Management
 
 (defun code-awareness--init-ipc ()
-  "Initialize IPC communication."
-  (setq code-awareness--guid (code-awareness--generate-guid))
-  (code-awareness-log-info "Initializing IPC with GUID %s" (format "%s" code-awareness--guid))
-  (code-awareness--connect-to-catalog))
+  "Initialize IPC by connecting directly to Muninn socket."
+  (code-awareness-log-info "Initializing IPC - connecting to Muninn")
+  (code-awareness--connect-to-muninn))
 
-(defun code-awareness--connect-to-catalog ()
-  "Connect to the catalog service."
-  (let* ((catalog-path (code-awareness--get-catalog-socket-path))
-         (process-name "code-awareness-catalog")
-         (buffer-name "*code-awareness-catalog*"))
-    (code-awareness-log-info "Connecting to catalog")
+(defun code-awareness--connect-to-muninn ()
+  "Connect directly to Muninn socket and perform handshake."
+  (let* ((socket-path (code-awareness--get-muninn-socket-path))
+         (process-name "code-awareness-muninn")
+         (buffer-name "*code-awareness-muninn*"))
+    (code-awareness-log-info "Connecting to Muninn at %s" socket-path)
     (condition-case err
         (progn
-          (setq code-awareness--ipc-catalog-process
+          (setq code-awareness--ipc-process
                 (make-network-process
                  :name process-name
                  :buffer buffer-name
                  :family 'local
-                 :service catalog-path
-                 :sentinel #'code-awareness--catalog-sentinel
-                 :filter #'code-awareness--catalog-filter
+                 :service socket-path
+                 :sentinel #'code-awareness--ipc-sentinel
+                 :filter #'code-awareness--ipc-filter
                  :noquery t))
-          (code-awareness-log-info "Catalog connection initiated")
-          ;; Check process status immediately and after a delay
-          (code-awareness--check-catalog-process-status)
-          (run-with-timer 0.5 nil #'code-awareness--check-catalog-process-status))
+          (code-awareness-log-info "Muninn connection initiated (status: %s)"
+                                  (process-status code-awareness--ipc-process))
+          ;; For local sockets the connection is synchronous — the
+          ;; process may already be open before the sentinel fires.
+          ;; Handle that explicitly so the handshake isn't missed.
+          (when (eq (process-status code-awareness--ipc-process) 'open)
+            (code-awareness-log-info "Connection already open, initiating handshake")
+            (setq code-awareness--connected t)
+            (code-awareness--update-mode-line)
+            (code-awareness--send-handshake)))
       (error
-       (code-awareness-log-error "Failed to create catalog connection: %s" err)
-       (message "Failed to connect to catalog service at %s. Error: %s"
-                catalog-path err)))))
+       (code-awareness-log-error "Failed to connect to Muninn: %s" err)
+       (message "Failed to connect to Muninn at %s. Is Kawa Code running? Error: %s"
+                socket-path err)
+       ;; Retry connection after delay
+       (run-with-timer 5.0 nil #'code-awareness--connect-to-muninn)))))
 
-(defun code-awareness--catalog-sentinel (_process event)
-  "Handle catalog process sentinel EVENTs."
-  (cond
-   ((string-match "failed" event)
-    (code-awareness-log-error "Failed to connect to catalog service at %s"
-                             (code-awareness--get-catalog-socket-path))
-    (message "Failed to connect to catalog service. Check if the service is running on %s"
-             (code-awareness--get-catalog-socket-path))
-    (setq code-awareness--connected nil))
-   ((string-match "exited" event)
-    (code-awareness-log-warn "Catalog connection closed")
-    (setq code-awareness--connected nil))
-   ((string-match "open" event)
-    (code-awareness-log-info "Successfully connected to catalog service")
-    (message "Connected to catalog service")
-    (setq code-awareness--connected t)
-    ;; Send 'connected' message to trigger client registration (matching VSCode behavior)
-    (code-awareness--catalog-filter "connected"))))
+(defun code-awareness--send-handshake ()
+  "Send handshake message to Muninn to receive CAW ID."
+  (when (and code-awareness--ipc-process
+             (eq (process-status code-awareness--ipc-process) 'open))
+    (let* ((msg-id (code-awareness--generate-msg-id))
+           (message (json-encode `((flow . "req")
+                                   (domain . "system")
+                                   (action . "handshake")
+                                   (data . ((clientType . "emacs")))
+                                   (_msgId . ,msg-id)))))
+      (code-awareness-log-info "Sending handshake to Muninn")
+      (process-send-string code-awareness--ipc-process (concat message "\n"))
+      ;; Store handler for handshake response
+      (puthash msg-id #'code-awareness--handle-handshake-response code-awareness--pending-requests))))
 
-(defun code-awareness--catalog-filter (data)
-  "Handle catalog process DATA."
-  (when (string= data "connected")
-    (code-awareness--register-client)))
+(defun code-awareness--handle-handshake-response (data)
+  "Handle handshake response from Muninn.
+Argument DATA the response data containing caw ID."
+  (let ((caw (alist-get 'caw data)))
+    (if caw
+        (progn
+          (setq code-awareness--caw caw)
+          (code-awareness-log-info "Received CAW ID from Muninn: %s" caw)
+          (message "Connected to Kawa Code (CAW: %s)" caw)
+          ;; Now initialize workspace
+          (code-awareness--init-workspace))
+      (code-awareness-log-error "Handshake response missing CAW ID: %s" data)
+      (message "Handshake failed - no CAW ID received"))))
 
-(defun code-awareness--register-client ()
-  "Register this client with the catalog service."
-  (unless code-awareness--client-registered
-    (let ((message (json-encode `((domain . "*")
-                                  (action . "clientId")
-                                  (data . ,code-awareness--guid)
-                                  (caw . ,code-awareness--guid)))))
-      (when code-awareness--ipc-catalog-process
-        (process-send-string code-awareness--ipc-catalog-process (concat message "\f"))
-        (code-awareness-log-info "Client registered")
-        (setq code-awareness--client-registered t)
-        (code-awareness--init-server))))
-  (code-awareness-log-info "Client already registered, skipping"))
+(defun code-awareness--send-sync-setup ()
+  "Send sync:setup to register for push notifications from Muninn.
+Uses raw emit (not transmit) to match VSCode pattern."
+  (when (and code-awareness--ipc-process
+             (eq (process-status code-awareness--ipc-process) 'open)
+             code-awareness--caw)
+    (let ((message (json-encode `((flow . "req")
+                                  (domain . "code")
+                                  (action . "sync:setup")
+                                  (caw . ,code-awareness--caw)))))
+      (code-awareness-log-info "Sending sync:setup")
+      (process-send-string code-awareness--ipc-process (concat message "\n")))))
 
-(defun code-awareness--init-server ()
-  "Initialize the server connection."
-  (code-awareness-log-info "Initializing server poll connection")
-  ;; Start polling for local service socket with exponential backoff
-  (code-awareness--poll-for-local-service))
+(defun code-awareness--handle-sync-setup-broadcast (_data)
+  "Handle sync:setup broadcast from Muninn indicating sync completed."
+  (code-awareness-log-info "Received sync:setup broadcast, refreshing active file")
+  (code-awareness--refresh-active-file))
 
 (defun code-awareness--init-workspace ()
   "Initialize workspace."
   (code-awareness-log-info "Workspace initialized")
   ;; Request temp directory from local service
   (code-awareness--request-tmp-dir)
+  ;; Register for sync push notifications
+  (code-awareness--send-sync-setup)
   ;; Send auth:info request after a short delay to ensure connection is ready
   (run-with-timer 0.1 nil #'code-awareness--send-auth-info))
 
 (defun code-awareness--request-tmp-dir ()
-  "Request temp directory from the Kawa Code local service."
-  (code-awareness-log-info "Requesting temp directory from local service")
+  "Request temp directory from Muninn."
+  (code-awareness-log-info "Requesting temp directory from Muninn")
   (if (and code-awareness--ipc-process
            (eq (process-status code-awareness--ipc-process) 'open))
       (progn
-        (code-awareness--transmit "get-tmp-dir" code-awareness--guid)
+        (code-awareness--transmit "get-tmp-dir" code-awareness--caw)
         (code-awareness--setup-response-handler "code" "get-tmp-dir"))
     (code-awareness-log-error "IPC process not ready for get-tmp-dir request")))
 
@@ -1426,74 +1510,24 @@ Argument DATA the data received from Kawa Code application."
       (code-awareness--transmit "auth:info" nil)
     (code-awareness-log-error "IPC process not ready for auth:info request")))
 
-(defvar code-awareness--max-poll-attempts 10
-  "Maximum number of polling attempts.")
-
-(defun code-awareness--poll-for-local-service ()
-  "Poll for Kawa Code IPC socket with exponential backoff."
-  (let ((socket-path (code-awareness--get-socket-path code-awareness--guid)))
-    (if (file-exists-p socket-path)
-        (progn
-          (setq code-awareness--poll-attempts 0)
-          (code-awareness--connect-to-local-service))
-      (if (>= code-awareness--poll-attempts code-awareness--max-poll-attempts)
-          (progn
-            (code-awareness-log-error "Failed to find Kawa Code IPC socket after %d attempts"
-                                     code-awareness--max-poll-attempts)
-            (message "Failed to connect to Kawa Code IPC after %d attempts"
-                     code-awareness--max-poll-attempts))
-        (setq code-awareness--poll-attempts (1+ code-awareness--poll-attempts))
-        ;; Exponential backoff: 0.5s, 1s, 2s, 4s, 8s, etc.
-        (let ((delay (expt 2 (1- code-awareness--poll-attempts))))
-          (run-with-timer delay nil #'code-awareness--poll-for-local-service))))))
-
-(defun code-awareness--connect-to-local-service ()
-  "Connect to the Kawa Code IPC with retry logic."
-  (let* ((socket-path (code-awareness--get-socket-path code-awareness--guid))
-         (process-name (format "code-awareness-ipc-%s" code-awareness--guid))
-         (buffer-name (format "*%s*" process-name)))
-
-    (condition-case err
-        (progn
-          (setq code-awareness--ipc-process
-                (make-network-process
-                 :name process-name
-                 :buffer buffer-name
-                 :family 'local
-                 :service socket-path
-                 :sentinel #'code-awareness--ipc-sentinel
-                 :filter #'code-awareness--ipc-filter
-                 :noquery t))
-          (code-awareness-log-info "Connected to Kawa Code IPC")
-          ;; Set up a timeout to detect stuck connections
-          (run-with-timer 5.0 nil #'code-awareness--check-connection-timeout)
-          ;; Set up a fallback to trigger workspace init if sentinel doesn't fire
-          (run-with-timer 1.0 nil #'code-awareness--fallback-workspace-init))
-      (error
-       (code-awareness-log-warn "Failed to connect to Kawa Code IPC, will retry in 5 seconds")
-       (code-awareness-log-warn "Error: %s" err)
-       ;; Schedule retry
-       (run-with-timer 5.0 nil #'code-awareness--connect-to-local-service)))))
-
 (defun code-awareness--check-connection-timeout ()
   "Check if the connection is stuck and handle timeout."
   (when (and code-awareness--ipc-process
              (not code-awareness--connected))
     (let ((status (process-status code-awareness--ipc-process)))
-      (if (eq status 'connect)
-          (progn
-            (code-awareness-log-error "Connection stuck, retrying")
-            (delete-process code-awareness--ipc-process)
-            (setq code-awareness--ipc-process nil)
-            (run-with-timer 1.0 nil #'code-awareness--connect-to-local-service))))))
+      (when (eq status 'connect)
+        (code-awareness-log-error "Connection stuck, retrying")
+        (delete-process code-awareness--ipc-process)
+        (setq code-awareness--ipc-process nil)
+        (run-with-timer 1.0 nil #'code-awareness--connect-to-muninn)))))
 
-(defun code-awareness--fallback-workspace-init ()
-  "Fallback workspace initialization if sentinel doesn't fire."
+(defun code-awareness--fallback-handshake ()
+  "Fallback handshake if sentinel doesn't fire properly."
   (when (and code-awareness--ipc-process
              (eq (process-status code-awareness--ipc-process) 'open)
-             (not code-awareness--connected))
-    (code-awareness-log-info "Using fallback workspace init")
-    (code-awareness--init-workspace)))
+             (not code-awareness--caw))
+    (code-awareness-log-info "Using fallback handshake")
+    (code-awareness--send-handshake)))
 
 (defun code-awareness--force-cleanup ()
   "Force cleanup of all Kawa Code processes and state."
@@ -1506,21 +1540,11 @@ Argument DATA the data received from Kawa Code application."
   (when code-awareness--highlight-timer
     (cancel-timer code-awareness--highlight-timer)
     (setq code-awareness--highlight-timer nil))
+  (when code-awareness--selection-timer
+    (cancel-timer code-awareness--selection-timer)
+    (setq code-awareness--selection-timer nil))
 
-  ;; Force delete processes regardless of status
-  (when code-awareness--ipc-catalog-process
-    (condition-case err
-        (progn
-          ;; Try to close the process gracefully first
-          (when (eq (process-status code-awareness--ipc-catalog-process) 'open)
-            (process-send-eof code-awareness--ipc-catalog-process))
-          ;; Force delete the process
-          (delete-process code-awareness--ipc-catalog-process)
-          (code-awareness-log-info "Force deleted catalog process"))
-      (error
-       (code-awareness-log-error "Error deleting catalog process: %s" err)))
-    (setq code-awareness--ipc-catalog-process nil))
-
+  ;; Force delete IPC process
   (when code-awareness--ipc-process
     (condition-case err
         (progn
@@ -1529,7 +1553,7 @@ Argument DATA the data received from Kawa Code application."
             (process-send-eof code-awareness--ipc-process))
           ;; Force delete the process
           (delete-process code-awareness--ipc-process)
-          (code-awareness-log-info "Force deleted IPC process"))
+          (code-awareness-log-info "Force deleted Muninn IPC process"))
       (error
        (code-awareness-log-error "Error deleting IPC process: %s" err)))
     (setq code-awareness--ipc-process nil))
@@ -1543,40 +1567,58 @@ Argument DATA the data received from Kawa Code application."
         code-awareness--authenticated nil
         code-awareness--active-buffer nil
         code-awareness--active-project nil
-        code-awareness--guid nil
-        code-awareness--client-registered nil
-        code-awareness--poll-attempts 0)
+        code-awareness--caw nil
+        code-awareness--last-cursor-line nil
+        code-awareness--is-cycling nil)
+
+  ;; Clear pending requests
+  (clrhash code-awareness--pending-requests)
 
   (code-awareness-log-info "Force cleanup completed"))
 
 (defun code-awareness--send-disconnect-messages ()
-  "Send disconnect messages to catalog service."
+  "Send disconnect message to Muninn."
   (code-awareness-log-info "Sending disconnect messages")
 
-  ;; Send disconnect message to catalog
-  (when (and code-awareness--ipc-catalog-process
-             (eq (process-status code-awareness--ipc-catalog-process) 'open))
-    (let ((message (json-encode `((domain . "*")
-                                  (action . "clientDisconnect")
-                                  (data . ,code-awareness--guid)
-                                  (caw . ,code-awareness--guid)))))
-      (code-awareness-log-info "Sending clientDisconnect to catalog")
+  ;; Send disconnect message to Muninn
+  (when (and code-awareness--ipc-process
+             (eq (process-status code-awareness--ipc-process) 'open)
+             code-awareness--caw)
+    (let ((message (json-encode `((flow . "req")
+                                  (domain . "system")
+                                  (action . "disconnect")
+                                  (data . ((caw . ,code-awareness--caw)))
+                                  (caw . ,code-awareness--caw)))))
+      (code-awareness-log-info "Sending disconnect to Muninn")
       (condition-case err
-          (process-send-string code-awareness--ipc-catalog-process (concat message "\f"))
+          (process-send-string code-awareness--ipc-process (concat message "\n"))
         (error
-         (code-awareness-log-error "Failed to send clientDisconnect to catalog: %s" err))))))
+         (code-awareness-log-error "Failed to send disconnect to Muninn: %s" err))))))
 
-(defun code-awareness--check-catalog-process-status ()
-  "Check the status of the catalog process."
-  (when code-awareness--ipc-catalog-process
-    (let ((status (process-status code-awareness--ipc-catalog-process)))
-      (if (eq status 'open)
-          (progn
-            (code-awareness-log-info "Catalog connected")
-            ;; If client is not registered yet, trigger registration as fallback
-            (unless code-awareness--client-registered
-              (code-awareness--catalog-filter "connected")))
-        (code-awareness-log-error "Catalog process not open, status: %s" status)))))
+;;; Cursor Tracking
+
+(defun code-awareness--selection-changed ()
+  "Send cursor position and symbol context to Muninn."
+  (setq code-awareness--selection-timer nil)
+  (condition-case nil
+      (when (and code-awareness--authenticated
+                 code-awareness--active-buffer
+                 (buffer-live-p code-awareness--active-buffer)
+                 (eq (current-buffer) code-awareness--active-buffer)
+                 (buffer-file-name code-awareness--active-buffer))
+        (let* ((fpath (code-awareness--cross-platform-path
+                       (buffer-file-name code-awareness--active-buffer)))
+               (line-number (line-number-at-pos))
+               (rel (ignore-errors
+                      (when (fboundp 'which-function)
+                        (which-function)))))
+          (code-awareness--transmit "context:select-lines"
+                                   `((fpath . ,fpath)
+                                     (selections . [])
+                                     (lineNumber . ,line-number)
+                                     ,@(when rel `((rel . ,rel)))
+                                     (caw . ,code-awareness--caw)))))
+    (error nil)))
 
 ;;; Buffer Management
 
@@ -1594,11 +1636,14 @@ Argument DATA the data received from Kawa Code application."
              (buffer-live-p code-awareness--active-buffer)
              (buffer-file-name code-awareness--active-buffer))
     (let ((filename (buffer-file-name code-awareness--active-buffer)))
-      ;; TODO: we're currently not handling the response -- line-diffs get refreshed only upon buffer switch
       (code-awareness--transmit "file-saved"
-                               `((fpath . ,filename)
-                                 (doc . ,(buffer-string))
-                                 (caw . ,code-awareness--guid))))))
+                               `((fpath . ,(code-awareness--cross-platform-path filename))
+                                 (doc . ,(with-current-buffer code-awareness--active-buffer
+                                           (buffer-string)))
+                                 (caw . ,code-awareness--caw))
+                               (lambda (response-data)
+                                 (code-awareness--handle-repo-active-path-response
+                                  response-data filename))))))
 
 ;;; Hooks and Event Handling
 
@@ -1609,6 +1654,7 @@ Argument DATA the data received from Kawa Code application."
 (defun code-awareness--post-command-hook ()
   "Hook function for `post-command-hook'."
   (let ((current-buffer (current-buffer)))
+    ;; Buffer switch detection
     (when (and current-buffer
                (not (eq current-buffer code-awareness--active-buffer)))
       (if (buffer-file-name current-buffer)
@@ -1619,14 +1665,120 @@ Argument DATA the data received from Kawa Code application."
             (unless (and code-awareness--active-buffer active-file
                          (string= current-file active-file))
               ;; Skip updates during EDiff sessions to avoid triggering events on every hunk navigation
-              ;; Check if the file is in the temp directory (peer file) or if we're in an EDiff session
               (unless (or (string-prefix-p (expand-file-name code-awareness--tmp-dir) current-file)
                           (bound-and-true-p ediff-this-buffer-ediff-sessions))
                 ;; Different file or no active buffer, update and refresh
                 (setq code-awareness--active-buffer current-buffer)
-                (code-awareness--refresh-active-file))))
-        ;; Don't clear active buffer when switching to non-file buffers
-        ))))
+                (setq code-awareness--last-cursor-line nil)
+                (code-awareness--refresh-active-file))))))
+    ;; Cursor line change detection (debounced context:select-lines)
+    (when (and code-awareness--active-buffer
+               (eq current-buffer code-awareness--active-buffer)
+               (buffer-file-name current-buffer))
+      (let ((current-line (line-number-at-pos)))
+        (unless (eq current-line code-awareness--last-cursor-line)
+          (setq code-awareness--last-cursor-line current-line)
+          (when code-awareness--selection-timer
+            (cancel-timer code-awareness--selection-timer))
+          (setq code-awareness--selection-timer
+                (run-with-timer code-awareness-selection-delay nil
+                                #'code-awareness--selection-changed)))))))
+
+;;; Diff Block Cycling
+
+(defun code-awareness--cycle-block (direction)
+  "Cycle through peer diff blocks with DIRECTION (1=next, -1=prev)."
+  (when (and code-awareness--authenticated
+             code-awareness--active-buffer
+             (buffer-live-p code-awareness--active-buffer)
+             (buffer-file-name code-awareness--active-buffer)
+             code-awareness--active-project)
+    ;; Undo previous cycle if still cycling
+    (when code-awareness--is-cycling
+      (with-current-buffer code-awareness--active-buffer
+        (let ((inhibit-modification-hooks t))
+          (undo))))
+    (let* ((fpath (code-awareness--cross-platform-path
+                   (buffer-file-name code-awareness--active-buffer)))
+           (origin (alist-get 'origin code-awareness--active-project))
+           (doc (with-current-buffer code-awareness--active-buffer
+                  (buffer-string)))
+           (line (with-current-buffer code-awareness--active-buffer
+                   (line-number-at-pos))))
+      (code-awareness--transmit "cycle-block"
+                               `((caw . ,code-awareness--caw)
+                                 (origin . ,origin)
+                                 (fpath . ,fpath)
+                                 (doc . ,doc)
+                                 (line . ,line)
+                                 (direction . ,direction))
+                               #'code-awareness--handle-cycle-block-response))))
+
+(defun code-awareness--handle-cycle-block-response (data)
+  "Handle response from cycle-block request.
+DATA contains block info with range and replaceLen."
+  (when data
+    (let* ((range (alist-get 'range data))
+           (line (alist-get 'line range))
+           (len (alist-get 'len range))
+           (content-vec (alist-get 'content range))
+           (replace-len (alist-get 'replaceLen data))
+           (content (when content-vec
+                      (mapconcat #'identity
+                                 (if (vectorp content-vec)
+                                     (append content-vec nil)
+                                   content-vec)
+                                 "\n"))))
+      (when (and line code-awareness--active-buffer
+                 (buffer-live-p code-awareness--active-buffer))
+        (with-current-buffer code-awareness--active-buffer
+          (let ((inhibit-modification-hooks t))
+            (save-excursion
+              (cond
+               ;; INSERT: replaceLen > 0 but len = 0
+               ((and replace-len (> replace-len 0) (or (not len) (= len 0)))
+                (with-suppressed-warnings ((interactive-only goto-line))
+                  (goto-line line))
+                (beginning-of-line)
+                (insert content "\n"))
+               ;; DELETE: replaceLen = 0 or nil
+               ((or (not replace-len) (= replace-len 0))
+                (with-suppressed-warnings ((interactive-only goto-line))
+                  (goto-line line))
+                (let ((start (line-beginning-position)))
+                  (with-suppressed-warnings ((interactive-only goto-line))
+                    (goto-line (+ line (or len 1))))
+                  (delete-region start (line-beginning-position))))
+               ;; REPLACE: both replaceLen and len > 0
+               (t
+                (with-suppressed-warnings ((interactive-only goto-line))
+                  (goto-line line))
+                (let ((start (line-beginning-position)))
+                  (with-suppressed-warnings ((interactive-only goto-line))
+                    (goto-line (+ line len)))
+                  (delete-region start (line-beginning-position))
+                  (goto-char start)
+                  (insert content "\n")))))))
+        (setq code-awareness--is-cycling t)
+        (code-awareness--refresh-active-file)))))
+
+(defun code-awareness--after-change-hook (_beg _end _len)
+  "Reset cycling state when buffer changes outside of cycling.
+BEG, END, LEN are standard `after-change-functions' arguments."
+  (unless inhibit-modification-hooks
+    (setq code-awareness--is-cycling nil)))
+
+;;;###autoload
+(defun code-awareness-next-peer ()
+  "Cycle to the next peer's diff block at the current position."
+  (interactive)
+  (code-awareness--cycle-block 1))
+
+;;;###autoload
+(defun code-awareness-prev-peer ()
+  "Cycle to the previous peer's diff block at the current position."
+  (interactive)
+  (code-awareness--cycle-block -1))
 
 ;;; Public API
 
@@ -1655,13 +1807,11 @@ Argument DATA the data received from Kawa Code application."
 (defun code-awareness-connection-status ()
   "Show the current connection status."
   (interactive)
-  (message "Catalog connected: %s, Local service connected: %s, Authenticated: %s, Client registered: %s"
-           (if (and code-awareness--ipc-catalog-process
-                    (eq (process-status code-awareness--ipc-catalog-process) 'open)) "yes" "no")
+  (message "Muninn connected: %s, CAW ID: %s, Authenticated: %s"
            (if (and code-awareness--ipc-process
                     (eq (process-status code-awareness--ipc-process) 'open)) "yes" "no")
-           (if code-awareness--authenticated "yes" "no")
-           (if code-awareness--client-registered "yes" "no")))
+           (or code-awareness--caw "none")
+           (if code-awareness--authenticated "yes" "no")))
 
 ;;; Reinit on Emacs restart
 
@@ -1676,13 +1826,20 @@ Argument DATA the data received from Kawa Code application."
 
 ;;; Minor Mode
 
+(defvar code-awareness-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-]") #'code-awareness-next-peer)
+    (define-key map (kbd "C-c C-[") #'code-awareness-prev-peer)
+    map)
+  "Keymap for `code-awareness-mode'.")
+
 ;;;###autoload
 (define-minor-mode code-awareness-mode
   "Toggle Kawa Code mode.
 Enable Kawa Code functionality for collaborative development."
   :init-value nil
   :global t
-  :lighter " CAW"
+  :lighter (:eval code-awareness--mode-line-string)
   :group 'code-awareness
   :require 'code-awareness
   (if code-awareness-mode
@@ -1699,6 +1856,7 @@ Enable Kawa Code functionality for collaborative development."
   (add-hook 'after-save-hook #'code-awareness--after-save-hook)
   (add-hook 'post-command-hook #'code-awareness--post-command-hook)
   (add-hook 'buffer-list-update-hook #'code-awareness--buffer-list-update-hook)
+  (add-hook 'after-change-functions #'code-awareness--after-change-hook)
   (add-hook 'kill-emacs-hook #'code-awareness--cleanup-on-exit)
   ;; Set the current buffer as active if it has a file (like VSCode's activeTextEditor)
   (when (and (current-buffer) (buffer-file-name (current-buffer)))
@@ -1718,11 +1876,15 @@ Enable Kawa Code functionality for collaborative development."
   "Disable Kawa Code."
   (code-awareness-log-info "Disabling and disconnecting")
 
+  ;; Reset mode-line
+  (setq code-awareness--mode-line-string " Kawa")
+
   ;; Remove hooks
   (remove-hook 'after-save-hook #'code-awareness--after-save-hook)
   (remove-hook 'post-command-hook #'code-awareness--post-command-hook)
   (remove-hook 'buffer-list-update-hook #'code-awareness--buffer-list-update-hook)
   (remove-hook 'kill-emacs-hook #'code-awareness--cleanup-on-exit)
+  (remove-hook 'after-change-functions #'code-awareness--after-change-hook)
 
   ;; Clear all highlights
   (code-awareness--clear-all-highlights)
